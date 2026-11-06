@@ -1,4 +1,4 @@
-% rebase('base.tpl', title='其他', path=path)
+% rebase('base.tpl', title='模型', path=path, msg=msg)
 
 <div class="container">
  <div class="row py-3">
@@ -17,12 +17,17 @@
         <div class="card-body">
         <h5 class="card-title">重新训练模型</h5>
         <p class="card-text">重新使用系统所有用户打标数据训练模型, 当打标数据增多后, 可以重新训练模型, 提高模型预测效果</p>
-        <a href="/do-training" class="btn btn-primary">开始训练</a>
+        <form action="/do-training" method="post">
+        <button type="submit" class="btn btn-primary">开始训练</button>
+        </form>
+        % if training_error:
+        <p class="card-text text-danger mt-3">训练失败：{{training_error}}</p>
+        % end
         </div>
         <div class="card-header">
            <h6> 当前模型数据 </h6>
         </div>
-        % if defined('error_msg') and error_msg is not None:
+        % if error_msg:
         <p class="card-text text-danger">{{error_msg}} </p>
         % end
         % if model_scores is not None:
@@ -31,7 +36,7 @@
             <li class="list-group-item">覆盖率: {{model_scores['recall']}}</li>
             <li class="list-group-item">综合评分(越高越好): {{model_scores['f1']}}</li>
         </ul>
-        % elif not (defined('error_msg') and error_msg):
+        % elif not error_msg:
         <div class="card-body">
            还没有训练过模型.
         </div>

@@ -379,12 +379,19 @@ class TestLocalFanhaoPage:
             assert 'alert-danger' not in response.text
         assert LocalItem.select().count() == 0
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：番号列表超过 100 KB（一千多行带地址的番号）时返回 413，提交失败')
     def test_large_submission(self, wsgi):
-        lines = '\r\n'.join(f'ABC-{i:04d},http://media.local/library/parts/{i}/file.mp4' for i in range(1, 2001))
+        lines = '\r\n'.join(f'ABC-{i:04d},http://media.local/library/parts/{i}/file.mp4' for i in range(1, 5001))
+        assert len(lines) > 250 * 1024
         response = wsgi.post('/local_fanhao', {'fanhao': lines, 'submit': '1'})
         assert response.status == 200
-        assert '已提交：2000 个本地文件' in response.text
+        assert '已提交：5000 个本地文件，5000 个番号加入下载队列' in response.text
+
+    def test_submission_over_10_mb(self, wsgi):
+        response = wsgi.post('/local_fanhao', {'fanhao': 'ABC-001\r\n' * (11 * 1024 * 1024 // 9), 'submit': '1'})
+        assert response.status == 413
+        assert '<p>提交的内容太大（超过 10 MB），请分几次提交</p>' in response.text
+        assert '<a href="/">返回首页</a>' in response.text
+        assert LocalItem.select().count() == 0
 
 
 def upload(wsgi, content):

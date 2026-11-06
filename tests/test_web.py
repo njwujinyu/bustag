@@ -13,6 +13,7 @@ import types
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import bottle
 import pytest
 import sklearn
 from sklearn.neighbors import KNeighborsClassifier
@@ -75,7 +76,7 @@ class TestPages:
         ('/', '推荐'),
         ('/tagit', '打标'),
         ('/local', '本地文件'),
-        ('/model', '其他'),
+        ('/model', '模型'),
         ('/load_db', '数据'),
         ('/about', '关于'),
     ])
@@ -104,9 +105,9 @@ class TestPages:
         assert covers_on(text) == []
         assert '暂无数据' in text
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：页面内容是中文，<html> 却声明 lang="en"')
-    def test_pages_declare_chinese(self, wsgi):
-        assert re.search(r'<html lang="zh', wsgi.get('/about').text)
+    @pytest.mark.parametrize('path', ['/', '/about', '/nope'])
+    def test_pages_declare_chinese(self, wsgi, path):
+        assert '<html lang="zh-CN">' in wsgi.get(path).text
 
     def test_static_files(self, wsgi):
         response = wsgi.get('/static/css/bustag.css')
@@ -374,13 +375,13 @@ class TestLocalFiles:
         assert '共  1页,1条' in text
         assert '还有 2 个本地文件的影片信息没有下载到（正在下载，或者番号不存在、下载失败），暂不显示' in text
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：本地文件页的标签写成了「观看次数观看」')
     def test_local_page_view_count_label(self, wsgi, make_item):
         make_item('ABC-001')
         LocalItem.saveit('ABC-001', 'http://media.local/ABC-001.mp4')
         text = wsgi.get('/local').text
         assert covers_on(text) == ['ABC-001']
         assert '观看次数: 0' in text
+        assert '观看次数观看' not in text
 
     def test_play_redirects_and_counts(self, wsgi, make_item, monkeypatch):
         monkeypatch.setattr(db, 'get_now_time', lambda: NOW)
@@ -460,26 +461,139 @@ class TestModelPage:
     def test_training(self, wsgi, data_dir, make_item):
         add_rated(make_item, 100, like=True)
         add_rated(make_item, 100, like=False)
-        response = wsgi.get('/do-training')
-        assert response.status == 200
-        f1 = re.search(r'综合评分\(越高越好\): ([\d.]+)', response.text)
+        text = train(wsgi)
+        assert '训练完成，下面是新模型的数据' in text
+        f1 = re.search(r'综合评分\(越高越好\): ([\d.]+)', text)
         assert f1 and float(f1.group(1)) >= 0.9
         assert (data_dir / classifier.MODEL_FILE).is_file()
 
     def test_training_failure_shows_reason(self, wsgi, data_dir, make_item):
         add_rated(make_item, 3, like=True)
-        text = wsgi.get('/do-training').text
-        assert '训练数据不足, 无法训练模型. 需要200, 当前3' in text
-        assert '还没有训练过模型' not in text
+        text = train(wsgi)
+        assert '训练失败：训练数据不足, 无法训练模型. 需要200, 当前3' in text
+        assert '还没有训练过模型.' in text
+        assert '训练完成' not in text
         assert not (data_dir / classifier.MODEL_FILE).exists()
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：重新训练失败时，页面不再显示仍在使用的旧模型的分数')
     def test_training_failure_keeps_showing_current_model(self, wsgi, data_dir, make_item):
-        save_model(data_dir)
-        add_rated(make_item, 3, like=True)
-        text = wsgi.get('/do-training').text
-        assert '训练数据不足' in text
-        assert '综合评分(越高越好): 0.76' in text
+        add_rated(make_item, 100, like=True)
+        add_rated(make_item, 100, like=False)
+        scores = re.search(r'准确率: ([\d.]+).*覆盖率: ([\d.]+).*综合评分\(越高越好\): ([\d.]+)', train(wsgi), re.S)
+        # 删掉一半打标后重新训练失败，旧的 model.pkl 还在用
+        ItemRate.delete().where(ItemRate.item_id.startswith('DIS')).execute()
+        text = train(wsgi)
+        assert '训练失败：训练数据不足, 无法训练模型. 需要200, 当前100' in text
+        assert text.index('训练失败') < text.index('当前模型数据')
+        assert f'准确率: {scores.group(1)}' in text
+        assert f'覆盖率: {scores.group(2)}' in text
+        assert f'综合评分(越高越好): {scores.group(3)}' in text
+
+    def test_get_does_not_train(self, wsgi, monkeypatch):
+        calls = []
+        monkeypatch.setattr(classifier, 'train', lambda: calls.append('train'))
+        response = wsgi.get('/do-training')
+        assert response.status == 303
+        assert urlsplit(response.headers['location']).path == '/model'
+        assert calls == []
+
+    def test_refreshing_the_result_page_does_not_train_again(self, wsgi, monkeypatch):
+        calls = []
+        monkeypatch.setattr(classifier, 'train', lambda: calls.append('train'))
+        response = wsgi.post('/do-training')
+        location = response.headers['location']
+        for _ in range(2):
+            assert '训练完成' in wsgi.get(location[location.index('/model'):]).text
+        assert calls == ['train']
+
+    @pytest.mark.parametrize('query', ['training=999999', 'training=abc', 'training=', 'training=<b>x</b>'])
+    def test_unknown_training_result_shows_nothing(self, wsgi, query):
+        text = wsgi.get('/model?' + query).text
+        assert '训练完成' not in text
+        assert '训练失败' not in text
+        assert '<b>x</b>' not in text
+
+    def test_only_recent_training_results_are_kept(self, wsgi, monkeypatch):
+        monkeypatch.setattr(classifier, 'train', lambda: None)
+        monkeypatch.setattr(index, '_training_results', {})
+        ids = [redirect_target(wsgi.post('/do-training'))[1]['training'] for _ in range(index.MAX_TRAINING_RESULTS + 1)]
+        assert '训练完成' not in wsgi.get(f'/model?training={ids[0]}').text
+        assert '训练完成' in wsgi.get(f'/model?training={ids[-1]}').text
+        assert len(index._training_results) == index.MAX_TRAINING_RESULTS
+
+
+def train(wsgi):
+    '''点模型页的"开始训练"：POST 之后跳回模型页，返回跳转后的页面'''
+    path, query, _ = redirect_target(wsgi.post('/do-training'))
+    assert path == '/model'
+    return wsgi.get(f'/model?training={query["training"]}').text
+
+
+class TestErrorPages:
+    @pytest.mark.parametrize('method, path, status, reason', [
+        ('GET', '/local_play/99999', 404, '没有这个本地文件'),
+        ('GET', '/cover/NOPE-000', 404, '没有这个番号'),
+        ('GET', '/no-such-page', 404, '没有这个页面，请检查网址'),
+        ('POST', '/about', 405, '这个地址不能这样访问，请从页面上的链接或按钮进入'),
+        ('POST', '/tag/ABC-001', 400, '提交的值只能是 0 或 1'),
+        ('GET', '/static/images/missing.png', 404, '没有这个页面，请检查网址'),
+    ])
+    def test_chinese_error_page(self, wsgi, make_item, method, path, status, reason):
+        make_item('ABC-001')
+        response = wsgi.request(method, path)
+        assert response.status == status
+        assert response.headers['content-type'] == 'text/html; charset=UTF-8'
+        text = response.text
+        assert f'<title>{index.ERROR_TITLES[status]}</title>' in text
+        assert f'<p>{reason}</p>' in text
+        assert '<a href="/">返回首页</a>' in text
+        assert 'href="/tagit">打标</a>' in text
+        assert 'Sorry, the requested URL' not in text
+        assert 'Error: ' not in text
+
+    def test_405_keeps_allow_header(self, wsgi):
+        response = wsgi.request('PUT', '/model')
+        assert response.status == 405
+        assert 'GET' in response.headers['allow']
+
+    def test_server_error_hides_the_traceback(self, wsgi, monkeypatch, caplog):
+        def broken(*args, **kwargs):
+            raise RuntimeError('数据库文件坏了 secret-detail')
+
+        monkeypatch.setattr(index, 'get_items', broken)
+        response = wsgi.get('/', allow_server_error=True)
+        assert response.status == 500
+        assert '<p>程序出错了，出错的详细信息已写进日志</p>' in response.text
+        assert 'secret-detail' not in response.text
+        assert 'Traceback' not in response.text
+        assert 'secret-detail' in response.errors
+        assert "GET / 出错：RuntimeError('数据库文件坏了 secret-detail')" in caplog.messages
+
+
+class TestPagination:
+    @staticmethod
+    def render(max_page, curr_page):
+        return bottle.template('pagination', page_info=(max_page * 10, max_page, curr_page, 10), like=1)
+
+    def options(self, max_page, curr_page):
+        return [int(n) for n in re.findall(r'<option[^>]*>(\d+)</option>', self.render(max_page, curr_page))]
+
+    def test_few_pages_are_all_listed(self):
+        assert self.options(5, 3) == [1, 2, 3, 4, 5]
+        assert self.options(101, 51) == list(range(1, 102))
+
+    @pytest.mark.parametrize('curr_page, expected', [
+        (1500, [1] + list(range(1450, 1551)) + [3000]),
+        (1, list(range(1, 52)) + [3000]),
+        (30, list(range(1, 81)) + [3000]),
+        (3000, [1] + list(range(2950, 3001))),
+    ])
+    def test_many_pages_list_first_last_and_nearby(self, curr_page, expected):
+        assert self.options(3000, curr_page) == expected
+
+    def test_current_page_is_selected(self):
+        html = self.render(3000, 1500)
+        assert re.findall(r'<option selected value="([^"]+)">', html) == ['?page=1500&amp;like=1']
+        assert len(html) < 10000
 
 
 class FakeProbe:

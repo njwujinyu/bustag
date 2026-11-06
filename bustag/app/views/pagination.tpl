@@ -27,7 +27,9 @@
 		<span>共  {{max_page}}页,{{total_items}}条</span>
 	跳转
 	<select id="pagenav">
-% for i in range(1, max_page+1):
+%# 页数很多时下拉框只列第一页、最后一页和当前页前后各 50 页
+% nearby = range(max(1, curr_page - 50), min(max_page, curr_page + 50) + 1)
+% for i in sorted({1, max_page, *nearby}):
 % url = '?page={}&like={}'.format(i, like)
 % selected = "selected" if i == curr_page else ""
 	<option {{selected}} value="{{url}}">{{i}}</option>

@@ -1,8 +1,10 @@
+import itertools
 import os
 import re
 import signal
 import socket
 import sys
+import threading
 from multiprocessing import freeze_support
 from urllib.parse import urlparse
 
@@ -11,7 +13,7 @@ if __name__ == '__main__' and not getattr(sys, 'frozen', False):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import bottle
-from bottle import route, template, static_file, request, redirect, hook, abort
+from bottle import route, template, static_file, request, redirect, hook
 from requests.utils import requote_uri
 from waitress import create_server
 
@@ -33,11 +35,43 @@ SERVER_THREADS = 8
 COVER_CACHE_CONTROL = 'public, max-age=2592000'
 # page 参数的上限，再大的值传给 SQLite 会溢出
 MAX_PAGE = 1000000
+# 普通表单一次最多提交 10 MB（本地番号页一行"番号,地址"约 100 字节，约十万行），超过返回 413；
+# 上传文件时这也是留在内存里的上限，更大的文件写到临时文件
+MAX_FORM_SIZE = 10 * 1024 * 1024
+bottle.BaseRequest.MEMFILE_MAX = MAX_FORM_SIZE
+# 错误页的标题，以及 bottle 自己产生的错误（英文原因）换成的中文原因
+ERROR_TITLES = {400: '请求有误', 403: '禁止访问', 404: '找不到页面', 405: '不支持的请求方式',
+                413: '提交的内容太大', 500: '程序出错'}
+ERROR_REASONS = {
+    400: '提交的内容不对，请返回上一页重试',
+    403: '不能访问这个地址',
+    404: '没有这个页面，请检查网址',
+    405: '这个地址不能这样访问，请从页面上的链接或按钮进入',
+    413: f'提交的内容太大（超过 {MAX_FORM_SIZE // 1024 // 1024} MB），请分几次提交',
+    500: '程序出错了，出错的详细信息已写进日志',
+}
+# 模型页只认最近这么多次训练的结果
+MAX_TRAINING_RESULTS = 10
 RESOURCE_DIR = get_resource_dir()
 STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
 bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
 # 所有模板都能直接用 {{version}}（页脚显示版本号）
 bottle.BaseTemplate.defaults['version'] = __version__
+
+# 训练编号 -> 训练失败的原因（成功为 None），训练后跳回模型页时按网址里的编号取出
+_training_results = {}
+_training_ids = itertools.count(1)
+_training_lock = threading.Lock()
+
+
+class PageError(bottle.HTTPError):
+    '''
+    带中文原因的错误，原因原样显示在错误页上
+    '''
+
+
+def _abort(status, reason):
+    raise PageError(status, reason)
 
 
 @hook('before_request')
@@ -60,7 +94,7 @@ def send_static(filepath):
 def cover(fanhao):
     fanhao = fanhao.upper()
     if Item.get_by_fanhao(fanhao) is None:
-        abort(404, '没有这个番号')
+        _abort(404, '没有这个番号')
     cover_file = get_cover_file(fanhao)
     if cover_file is None:
         # 下载失败时返回占位图，不让浏览器缓存，下次刷新页面再重试
@@ -98,7 +132,7 @@ def _submit_value():
     '''表单按钮的值只接受 0 和 1'''
     value = request.POST.submit
     if value not in ('0', '1'):
-        abort(400, '提交的值只能是 0 或 1')
+        _abort(400, '提交的值只能是 0 或 1')
     return int(value)
 
 
@@ -139,7 +173,7 @@ def tagit():
 def tag(fanhao):
     rate_value = _submit_value()
     if Item.get_by_fanhao(fanhao) is None:
-        abort(404, '没有这个番号')
+        _abort(404, '没有这个番号')
     # 打标页"喜欢 / 不喜欢"标签页上的按钮就是用来改自己的打标的，所以覆盖已有的用户打标；
     # 页面打开期间定时推荐可能已经给它打过系统评分，也一起覆盖
     outcome = ItemRate.save_user_rate(fanhao, rate_value, replace_user_rate=True)
@@ -152,7 +186,7 @@ def correct(fanhao):
     is_correct = _submit_value()
     item_rate = ItemRate.get_by_fanhao(fanhao)
     if not item_rate:
-        abort(404, '没有这个番号的推荐记录')
+        _abort(404, '没有这个番号的推荐记录')
     item_rate.rate_type = RATE_TYPE.USER_RATE
     if not is_correct:
         rate_value = item_rate.rate_value
@@ -162,6 +196,20 @@ def correct(fanhao):
     logger.debug(
         f'updated item fanhao: {fanhao}, {"and correct the rate_value" if not is_correct else ""}')
     redirect(f'/?page={_page_param()}&like={_like_param(RATE_VALUE.LIKE.value)}{_form_anchor()}')
+
+
+def _training_result():
+    '''
+    训练后跳回模型页时网址里的编号对应的结果：(是否找到, 失败原因)；编号不对或已经过期时没找到
+    '''
+    try:
+        result_id = int(request.query.get('training', ''))
+    except ValueError:
+        return False, None
+    with _training_lock:
+        if result_id not in _training_results:
+            return False, None
+        return True, _training_results[result_id]
 
 
 @route('/model')
@@ -175,19 +223,33 @@ def other_settings():
     except ModelLoadError as ex:
         logger.warning(ex)
         error_msg = str(ex)
-    return template('model', path=request.path, model_scores=model_scores, error_msg=error_msg)
+    trained, training_error = _training_result()
+    msg = '训练完成，下面是新模型的数据' if trained and training_error is None else ''
+    return template('model', path=request.path, model_scores=model_scores, error_msg=error_msg,
+                    training_error=training_error, msg=msg)
+
+
+@route('/do-training', method='POST')
+def do_training():
+    training_error = None
+    try:
+        clf.train()
+    except ValueError as ex:
+        training_error = ' '.join(ex.args)
+        logger.warning(f'训练失败：{training_error}')
+    with _training_lock:
+        result_id = next(_training_ids)
+        _training_results[result_id] = training_error
+        while len(_training_results) > MAX_TRAINING_RESULTS:
+            del _training_results[min(_training_results)]
+    # 训练完跳回模型页（POST 之后重定向），刷新页面不会再训练一次；结果只在网址里放编号
+    redirect(f'/model?training={result_id}')
 
 
 @route('/do-training')
-def do_training():
-    error_msg = None
-    model_scores = None
-    try:
-        _, model_scores = clf.train()
-    except ValueError as ex:
-        error_msg = ' '.join(ex.args)
-        logger.warning(f'训练失败：{error_msg}')
-    return template('model', path=request.path, model_scores=model_scores, error_msg=error_msg)
+def do_training_by_get():
+    # 训练只接受模型页按钮的 POST：别的网页里的图片、链接或书签用 GET 访问这里时不训练
+    redirect('/model')
 
 
 @route('/local_fanhao', method=['GET', 'POST'])
@@ -229,11 +291,11 @@ def local():
 def local_play(id):
     local_item = LocalItem.get_or_none(LocalItem.id == id)
     if local_item is None:
-        abort(404, '没有这个本地文件')
+        _abort(404, '没有这个本地文件')
     file_path = local_item.path or ''
     parsed = urlparse(file_path)
     if parsed.scheme not in ('http', 'https') or not parsed.netloc or not file_path.isprintable():
-        abort(400, '只能播放 http / https 地址的文件')
+        _abort(400, '只能播放 http / https 地址的文件')
     LocalItem.update_play(id)
     logger.debug(file_path)
     # 地址里有中文或空格时，Location 头必须先做百分号编码
@@ -288,6 +350,20 @@ def load_db():
 def about():
     return template('about', path=request.path)
 
+
+def _error_page(error):
+    '''
+    出错时显示带导航栏的中文页面，状态码不变；不显示异常栈（bottle 已把它写进 wsgi.errors）
+    '''
+    status = error.status_code
+    reason = error.body if isinstance(error, PageError) else ERROR_REASONS[status]
+    if status >= 500:
+        logger.error(f'{request.method} {request.path} 出错：{error.exception!r}')
+    return template('error', path=request.path, status=status, title=ERROR_TITLES[status], reason=reason)
+
+
+for _status in ERROR_TITLES:
+    bottle.error(_status)(_error_page)
 
 app = bottle.default_app()
 

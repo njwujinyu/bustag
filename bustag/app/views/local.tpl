@@ -31,7 +31,7 @@
 			<div class="col-7 col-md-5">
 			<div class="small text-muted">发行日期: {{local_item.item.release_date}}</div>
 			<div class="small text-muted">上次观看: {{local_item.last_view_date}}</div>
-			<div class="small text-muted">观看次数观看: {{local_item.view_times}}</div>
+			<div class="small text-muted">观看次数: {{local_item.view_times}}</div>
 			<h6>{{local_item.item.fanhao}} </h6>
 			<a href="{{local_item.item.url}}" target="_blank" rel="noreferrer noopener"> {{local_item.item.title[:30]}} </a>
 			<div>

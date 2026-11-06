@@ -151,14 +151,14 @@ class WSGIResponse:
 
 class WSGIClient:
     '''
-    直接调用 WSGI 应用，不开端口。响应头名转成小写。5xx 直接判失败，
+    直接调用 WSGI 应用，不开端口。响应头名转成小写。5xx 直接判失败（allow_server_error=True 时除外），
     并附上应用写到 wsgi.errors 的异常栈
     '''
 
     def __init__(self, app):
         self.app = app
 
-    def request(self, method, path, body=b'', content_type=None, headers=None):
+    def request(self, method, path, body=b'', content_type=None, headers=None, allow_server_error=False):
         environ = {}
         setup_testing_defaults(environ)
         path_part, _, query = path.partition('?')
@@ -191,11 +191,12 @@ class WSGIClient:
         status = int(captured['status'].split()[0])
         response = WSGIResponse(status, {k.lower(): v for k, v in captured['headers']},
                                 content, errors.getvalue())
-        assert status < 500, f'{method} {path} -> {captured["status"]}\n{response.errors}'
+        if not allow_server_error:
+            assert status < 500, f'{method} {path} -> {captured["status"]}\n{response.errors}'
         return response
 
-    def get(self, path, headers=None):
-        return self.request('GET', path, headers=headers)
+    def get(self, path, headers=None, allow_server_error=False):
+        return self.request('GET', path, headers=headers, allow_server_error=allow_server_error)
 
     def post(self, path, data=None, headers=None):
         body = urlencode(data or {}).encode('utf-8')
