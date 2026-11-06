@@ -17,7 +17,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 
 from bustag import main, util
 from bustag.model import classifier
-from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, ModelLoadError
+from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, PREDICT_ERROR, ModelLoadError
 from bustag.spider import bus_spider
 from bustag.spider.bus_spider import DownloadResult
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate
@@ -75,14 +75,33 @@ class TestDownload:
         assert calls == []
 
 
+def trained_model():
+    '''用 g1、s1 两个标签训练过的模型，和 save_model_files 默认的标签编码器配套'''
+    return KNeighborsClassifier(n_neighbors=1).fit([[1, 0], [0, 1]], [0, 1])
+
+
 def save_model_files(data_dir, model=None, binarizer=None):
     '''写 model.pkl 和 label_binarizer.pkl；不传内容时写一份能用的'''
     if model is None:
-        model = {'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': sklearn.__version__}
+        model = {'model': trained_model(), 'scores': SCORES, 'sklearn_version': sklearn.__version__}
     if binarizer is None:
         binarizer = MultiLabelBinarizer().fit([['g1', 's1']])
     (data_dir / MODEL_FILE).write_bytes(pickle.dumps(model))
     (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(binarizer))
+
+
+def unusable_pair(data_dir, case):
+    '''
+    写两个都能读出来、但不能一起预测的文件：
+    mismatch 是标签编码器换成了另一次训练的；cannot-predict 是模型的内部属性和当前 scikit-learn 对不上
+    '''
+    model = trained_model()
+    binarizer = MultiLabelBinarizer().fit([['g1', 's1']])
+    if case == 'mismatch':
+        binarizer = MultiLabelBinarizer().fit([['x', 'y', 'z']])
+    else:
+        del model.n_samples_fit_
+    save_model_files(data_dir, {'model': model, 'scores': SCORES, 'sklearn_version': sklearn.__version__}, binarizer)
 
 
 class TestRecommend:
@@ -117,6 +136,15 @@ class TestRecommend:
         assert result.exit_code == 1
         assert f'无法推荐：{reason}' in result.output
         assert '重新训练' in result.output
+        assert ItemRate.get_by_fanhao('ABC-001') is None
+
+    @pytest.mark.parametrize('case', ['mismatch', 'cannot-predict'])
+    def test_model_that_cannot_predict(self, data_dir, make_item, case):
+        make_item('ABC-001', tags=[('genre', 'g1')])
+        unusable_pair(data_dir, case)
+        result = invoke('recommend')
+        assert result.exit_code == 1
+        assert result.output == f'无法推荐：{PREDICT_ERROR}\n'
         assert ItemRate.get_by_fanhao('ABC-001') is None
 
 
@@ -242,7 +270,7 @@ class TestCheck:
     def test_model_from_other_sklearn_version(self, site, data_dir, monkeypatch):
         with monkeypatch.context() as patch:
             patch.setattr(sklearn.base, '__version__', '0.21.3')
-            content = {'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': '0.21.3'}
+            content = {'model': trained_model(), 'scores': SCORES, 'sklearn_version': '0.21.3'}
             save_model_files(data_dir, model=content)
         output = invoke('check').output
         assert f'{WARN} 模型：可以读取，但是用 scikit-learn 0.21.3 训练的（当前 {sklearn.__version__}）' in output
@@ -269,6 +297,15 @@ class TestCheck:
         assert f'{WARN} 模型：{info.value}' in result.output.splitlines()
         assert f'{OK} 模型' not in result.output
         assert result.exit_code == 0
+
+    @pytest.mark.parametrize('case', ['mismatch', 'cannot-predict'])
+    def test_model_that_cannot_predict_gives_the_same_reason_as_recommend(self, site, data_dir, case):
+        unusable_pair(data_dir, case)
+        result = invoke('check')
+        assert f'{WARN} 模型：{PREDICT_ERROR}' in result.output.splitlines()
+        assert f'{OK} 模型' not in result.output
+        assert result.exit_code == 0
+        assert invoke('recommend').output == f'无法推荐：{PREDICT_ERROR}\n'
 
 
 def test_module_runs_as_script(tmp_path):

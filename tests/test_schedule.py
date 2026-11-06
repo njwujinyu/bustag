@@ -3,16 +3,21 @@
 抓取和推荐都换成记录调用的假函数；定时抓取的首次运行推迟到一小时后，测试期间不会触发
 '''
 import logging
+import pickle
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import sklearn
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import MultiLabelBinarizer
 
 from bustag import util
 from bustag.app import schedule
-from bustag.model.persist import MODEL_FILE
+from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, PREDICT_ERROR
 from bustag.spider import bus_spider
+from bustag.spider.db import ItemRate
 
 
 def wait_for(condition, timeout=10):
@@ -164,3 +169,14 @@ class TestJobs:
         schedule.recommend()
         assert any(m.startswith('无法推荐：模型文件 model.pkl 无法读取') and m.endswith('重新训练')
                    for m in caplog.messages)
+
+    def test_recommend_with_model_that_cannot_predict_only_logs(self, data_dir, make_item, caplog):
+        make_item('ABC-001', tags=[('genre', 'g1')])
+        model = KNeighborsClassifier(n_neighbors=1).fit([[1, 0], [0, 1]], [0, 1])
+        (data_dir / MODEL_FILE).write_bytes(pickle.dumps(
+            {'model': model, 'scores': {'precision': 1.0, 'recall': 1.0, 'f1': 1.0},
+             'sklearn_version': sklearn.__version__}))
+        (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(MultiLabelBinarizer().fit([['x', 'y', 'z']])))
+        schedule.recommend()
+        assert f'无法推荐：{PREDICT_ERROR}' in caplog.messages
+        assert ItemRate.get_by_fanhao('ABC-001') is None

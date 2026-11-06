@@ -21,7 +21,7 @@ import bustag.model.classifier as clf
 from bustag import __version__
 from bustag.app.local import add_local_fanhao, load_tags_db, remove_stale_uploads, save_upload
 from bustag.app.schedule import start_scheduler, add_download_job
-from bustag.model.persist import ModelLoadError
+from bustag.model.persist import ModelLoadError, ModelSaveError
 from bustag.spider import db
 from bustag.spider.covers import get_cover_file
 from bustag.spider.db import (get_items, get_local_items, count_local_items_without_item, RATE_TYPE,
@@ -234,7 +234,7 @@ def do_training():
     training_error = None
     try:
         clf.train()
-    except ValueError as ex:
+    except (ValueError, ModelSaveError) as ex:
         training_error = ' '.join(ex.args)
         logger.warning(f'训练失败：{training_error}')
     with _training_lock:

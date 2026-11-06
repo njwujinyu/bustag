@@ -7,8 +7,8 @@ from collections import Counter
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
 from bustag.spider.db import get_items, RATE_TYPE
-from bustag.model.persist import BINARIZER_PATH, dump_model, read_binarizer
-from bustag.util import get_data_path, logger
+from bustag.model.persist import prediction_error
+from bustag.util import logger
 
 
 def load_data():
@@ -64,12 +64,14 @@ def process_data(rows):
 
     Args:
         rows: as_dict() 返回的字典列表
+
+    Returns:
+        (X, y, 标签编码器)。编码器在模型训练成功后和模型一起保存
     '''
     mlb = MultiLabelBinarizer()
     X = mlb.fit_transform([row['tags'] for row in rows])
     y = [row['target'] for row in rows]
-    dump_model(get_data_path(BINARIZER_PATH), mlb)
-    return X, y
+    return X, y, mlb
 
 
 def split_data(X, y):
@@ -83,6 +85,9 @@ def prepare_data(min_samples=0):
     Args:
         min_samples: 打标数据少于这个数量时不训练
 
+    Returns:
+        (X_train, X_test, y_train, y_test, 标签编码器)
+
     Raises:
         ValueError: 打标数据不够，或者只有一种标签。消息是中文，可以直接显示给用户
     '''
@@ -92,15 +97,19 @@ def prepare_data(min_samples=0):
         raise ValueError(f'训练数据不足, 无法训练模型. 需要{min_samples}, 当前{total}')
     rows = [as_dict(item) for item in items]
     check_labels([row['target'] for row in rows])
-    X, y = process_data(rows)
-    return split_data(X, y)
+    X, y, mlb = process_data(rows)
+    return (*split_data(X, y), mlb)
 
 
-def prepare_predict_data():
+def prepare_predict_data(mlb):
     '''
+    还没有评分的影片，返回 (番号列表, 编码后的标签)
+
+    Args:
+        mlb: 和模型一起保存的标签编码器
+
     Raises:
-        FileNotFoundError: 还没有训练过模型
-        ModelLoadError: 保存的标签编码器读不了或者格式不对，需要重新训练
+        ModelLoadError: 编码器用不了（和当前的 scikit-learn 不兼容等），需要重新训练
     '''
     # get not rated data
     rate_type = None
@@ -108,15 +117,17 @@ def prepare_predict_data():
     page = None
     unrated_items, _ = get_items(
         rate_type=rate_type, rate_value=rate_value, page=page)
-    mlb = read_binarizer(get_data_path(BINARIZER_PATH))
     rows = [as_dict(item) for item in unrated_items]
     tag_sets = [row['tags'] for row in rows]
-    unknown = set().union(*tag_sets) - set(mlb.classes_)
+    try:
+        unknown = set().union(*tag_sets) - set(mlb.classes_)
+        with warnings.catch_warnings():
+            # 新影片总有训练时没见过的演员、系列，忽略它们正是想要的结果；
+            # scikit-learn 每次都会把这些标签名整串打成警告，看起来像出错
+            warnings.filterwarnings('ignore', message='unknown class', category=UserWarning)
+            X = mlb.transform(tag_sets)
+    except Exception as ex:
+        raise prediction_error(ex) from ex
     if unknown:
         logger.debug(f'本次有 {len(unknown)} 个训练时没见过的标签，已忽略')
-    with warnings.catch_warnings():
-        # 新影片总有训练时没见过的演员、系列，忽略它们正是想要的结果；
-        # scikit-learn 每次都会把这些标签名整串打成警告，看起来像出错
-        warnings.filterwarnings('ignore', message='unknown class', category=UserWarning)
-        X = mlb.transform(tag_sets)
     return [row['id'] for row in rows], X

@@ -2,6 +2,7 @@
 网页：直接调用 WSGI 应用（不开端口）。封面下载走 FakeFetcher，启动相关的函数用假的 socket / 服务器
 '''
 import datetime
+import errno
 import json
 import logging
 import os
@@ -22,8 +23,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 import bustag
 from bustag.app import index, schedule
 from bustag.app.local import add_local_fanhao
-from bustag.model import classifier
-from bustag.model.persist import BINARIZER_PATH, ModelLoadError, read_model_files
+from bustag.model import classifier, persist
+from bustag.model.persist import BINARIZER_PATH, PREDICT_ERROR, ModelLoadError, read_model_files
 from bustag.spider import covers, db
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate, LocalItem
 from bustag.spider.fetcher import FetchError
@@ -46,11 +47,12 @@ def redirect_target(response):
     return parts.path, {k: v[0] for k, v in parse_qs(parts.query).items()}, parts.fragment
 
 
-def save_model(data_dir, scores=SCORES):
-    '''写一份能用的 model.pkl 和 label_binarizer.pkl'''
+def save_model(data_dir, scores=SCORES, binarizer=None):
+    '''写一份能用的 model.pkl 和 label_binarizer.pkl（模型用 g1、s1 两个标签训练过）；binarizer 换掉标签编码器'''
+    model = KNeighborsClassifier(n_neighbors=1).fit([[1, 0], [0, 1]], [0, 1])
     (data_dir / classifier.MODEL_FILE).write_bytes(pickle.dumps(
-        {'model': KNeighborsClassifier(), 'scores': scores, 'sklearn_version': sklearn.__version__}))
-    (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(MultiLabelBinarizer().fit([['g1', 's1']])))
+        {'model': model, 'scores': scores, 'sklearn_version': sklearn.__version__}))
+    (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(binarizer or MultiLabelBinarizer().fit([['g1', 's1']])))
 
 
 class TestImport:
@@ -483,6 +485,13 @@ class TestModelPage:
         assert '还没有训练过模型.' in text
         assert '准确率' not in text
 
+    def test_model_that_cannot_predict_shows_the_same_reason_as_recommend_and_check(self, wsgi, data_dir):
+        save_model(data_dir, binarizer=MultiLabelBinarizer().fit([['x', 'y', 'z']]))
+        text = wsgi.get('/model').text
+        assert f'<p class="card-text text-danger">{bottle.html_escape(PREDICT_ERROR)} </p>' in text
+        assert '准确率' not in text
+        assert '还没有训练过模型' not in text
+
     def test_training(self, wsgi, data_dir, make_item):
         add_rated(make_item, 100, like=True)
         add_rated(make_item, 100, like=False)
@@ -512,6 +521,25 @@ class TestModelPage:
         assert f'准确率: {scores.group(1)}' in text
         assert f'覆盖率: {scores.group(2)}' in text
         assert f'综合评分(越高越好): {scores.group(3)}' in text
+
+    def test_save_failure_keeps_showing_current_model(self, wsgi, data_dir, make_item, monkeypatch):
+        add_rated(make_item, 100, like=True)
+        add_rated(make_item, 100, like=False)
+        scores = re.search(r'准确率: [\d.]+.*覆盖率: [\d.]+.*综合评分\(越高越好\): [\d.]+', train(wsgi), re.S).group(0)
+        before = (data_dir / classifier.MODEL_FILE).read_bytes()
+        real_write_temp = persist._write_temp
+
+        def disk_full(path, write):
+            if os.path.basename(path) == 'model.pkl':
+                raise OSError(errno.ENOSPC, '磁盘空间不足')
+            return real_write_temp(path, write)
+
+        monkeypatch.setattr(persist, '_write_temp', disk_full)
+        text = train(wsgi)
+        assert re.search(r'训练失败：无法保存模型文件到 \S+（磁盘空间不足），原来的模型没有改动', text)
+        assert scores in text
+        assert '训练完成' not in text
+        assert (data_dir / classifier.MODEL_FILE).read_bytes() == before
 
     def test_get_does_not_train(self, wsgi, monkeypatch):
         calls = []

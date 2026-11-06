@@ -131,7 +131,10 @@ def _check_site(results):
 
 
 def _check_model(results):
-    '''和网页"模型"页、推荐一样用 read_model_files 检查 model.pkl 和 label_binarizer.pkl'''
+    '''
+    和网页"模型"页、推荐一样用 read_model_files 检查 model.pkl 和 label_binarizer.pkl：
+    读得出、内容对、两个配得上，并且试预测一次成功
+    '''
     model_file = os.path.normpath(get_data_path(MODEL_FILE))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
