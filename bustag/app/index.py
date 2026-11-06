@@ -1,17 +1,32 @@
-from collections import defaultdict
-import threading
-import traceback
-import sys
 import os
-import bottle
+import signal
+import sys
 from multiprocessing import freeze_support
-from bottle import route, run, template, static_file, request, response, redirect, hook
 
-dirname = os.path.dirname(os.path.realpath(__file__))
-if getattr(sys, 'frozen', False):
-    dirname = sys._MEIPASS
-print('dirname:' + dirname)
-bottle.TEMPLATE_PATH.insert(0, dirname + '/views/')
+if __name__ == '__main__' and not getattr(sys, 'frozen', False):
+    # python bustag/app/index.py：sys.path 里只有脚本所在目录，要把仓库根目录加进去才能导入 bustag
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import bottle
+from bottle import route, template, static_file, request, redirect, hook
+from waitress import create_server
+
+import bustag.model.classifier as clf
+from bustag import __version__
+from bustag.app.local import add_local_fanhao, load_tags_db
+from bustag.app.schedule import start_scheduler, add_download_job
+from bustag.spider import db
+from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
+                              LocalItem, DBError, db as dbconn)
+from bustag.util import logger, get_data_path, get_resource_dir
+
+DEFAULT_HOST = '0.0.0.0'
+DEFAULT_PORT = 8000
+# 封面请求在缓存未命中时要等下载，多留一些线程，避免页面请求排在封面后面
+SERVER_THREADS = 8
+RESOURCE_DIR = get_resource_dir()
+STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
+bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
 
 
 @hook('before_request')
@@ -27,7 +42,7 @@ def _close_db():
 
 @route('/static/<filepath:path>')
 def send_static(filepath):
-    return static_file(filepath, root=dirname+'/static/')
+    return static_file(filepath, root=STATIC_DIR)
 
 
 def _remove_extra_tags(item):
@@ -201,30 +216,100 @@ def about():
 app = bottle.default_app()
 
 
-def start_app():
+def create_app():
+    '''
+    启动定时任务（只启动一次）并返回 WSGI 应用。用 gunicorn 时只能开 1 个 worker（定时任务在进程内）：
+    gunicorn -w 1 "bustag.app.index:create_app()" --bind 0.0.0.0:8000
+    '''
     start_scheduler()
-    run(host='0.0.0.0', server='paste', port=8000, debug=True)
-    # run(host='0.0.0.0', port=8000, debug=True, reloader=False)
+    return app
 
 
-if __name__ == "__main__":
+class StartupError(Exception):
+    '''启动参数有问题（端口无效、端口被占用等），消息直接给用户看'''
+
+
+def _listen_address():
+    host = os.environ.get('BUSTAG_HOST') or DEFAULT_HOST
+    port_text = os.environ.get('BUSTAG_PORT') or str(DEFAULT_PORT)
     try:
-        freeze_support()
-        from bustag import __version__
-        print(f"Bustag server starting: version: {__version__}\n\n")
-        import bustag.model.classifier as clf
-        from bustag.util import logger, get_now_time, get_data_path
-        from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
-                                      Item, LocalItem, DBError, db as dbconn)
-        from bustag.spider import db
-        from bustag.app.schedule import start_scheduler, add_download_job
-        from bustag.spider import bus_spider
-        from bustag.app.local import add_local_fanhao, load_tags_db
-        start_app()
-    except Exception as e:
-        print('system error')
-        traceback.print_exc()
-    finally:
-        print("Press Enter to continue ...")
-        input()
-        os._exit(1)
+        port = int(port_text)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise StartupError(f'环境变量 BUSTAG_PORT={port_text} 不是有效的端口号（1-65535）')
+    return host, port
+
+
+def _display_host(host):
+    '''0.0.0.0 之类的监听地址不能直接在浏览器里打开，换成本机地址'''
+    return '127.0.0.1' if host in ('0.0.0.0', '::', '[::]') else host
+
+
+def _exit_on_sigterm():
+    '''
+    Docker 里 Python 是 PID 1，默认不处理 SIGTERM，docker stop 要等 10 秒才强行结束。
+    收到 SIGTERM 时抛出 SystemExit，waitress 会接住它并关闭服务。
+    '''
+    sigterm = getattr(signal, 'SIGTERM', None)
+    if sigterm is None:
+        return
+
+    def handler(signum, frame):
+        raise SystemExit(0)
+
+    try:
+        signal.signal(sigterm, handler)
+    except (ValueError, OSError):
+        # 不在主线程里调用时不能注册信号处理函数
+        pass
+
+
+def _wait_for_enter():
+    '''
+    双击运行 exe 时，出错信息会随窗口一起消失，所以先等用户按回车。
+    源码运行、Docker、重定向输出等没有交互控制台的情况不等。
+    '''
+    if not getattr(sys, 'frozen', False):
+        return
+    if sys.stdin is None or not sys.stdin.isatty():
+        return
+    try:
+        input('按回车键退出 ...')
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+
+
+def _serve():
+    host, port = _listen_address()
+    logger.info(f'bustag v{__version__} 启动')
+    try:
+        server = create_server(app, host=host, port=port, threads=SERVER_THREADS)
+    except OSError as ex:
+        raise StartupError(f'无法监听 {host}:{port}（{ex}）。端口可能已被占用，'
+                           '可以设置环境变量 BUSTAG_PORT 换一个端口') from ex
+    create_app()
+    _exit_on_sigterm()
+    logger.info(f'浏览器访问 http://{_display_host(host)}:{port}')
+    server.run()
+    logger.info('服务已停止')
+
+
+def main():
+    freeze_support()
+    try:
+        _serve()
+    except KeyboardInterrupt:
+        pass
+    except StartupError as ex:
+        logger.error(ex)
+        _wait_for_enter()
+        sys.exit(1)
+    except Exception:
+        logger.exception('服务异常退出')
+        _wait_for_enter()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
