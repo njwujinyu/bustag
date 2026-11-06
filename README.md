@@ -59,7 +59,7 @@
 - 数据（数据库、配置、模型、封面缓存）放在 exe 旁边的 `data` 文件夹。升级时把新版解压到新目录，再把旧目录里的 `data` 文件夹复制过去。
 - 第一次启动较慢（本机实测约 19 秒，杀毒软件会扫描解压出来的上千个文件），之后 2–3 秒。exe 没有数字签名，Windows 可能弹出"已保护你的电脑"，点"更多信息 → 仍要运行"。
 - 端口被占用时窗口里会提示，在命令行里设置 `BUSTAG_PORT` 换一个端口：PowerShell 里 `$env:BUSTAG_PORT = '8001'; .\bustag.exe`，cmd 里 `set BUSTAG_PORT=8001` 后再运行。
-- exe 里只有网页服务；`check`、`download` 等命令行工具要用源码运行（见下）。
+- 出问题时先自检：在 exe 所在的文件夹里打开 PowerShell 或 cmd（在资源管理器的地址栏输入 `cmd` 回车即可），运行 `.\bustag.exe check`。`.\bustag.exe download`、`.\bustag.exe recommend` 和下面"命令行"一节的命令一样；不带参数运行就是启动网页服务。
 
 ### Docker（NAS / 服务器，推荐）
 
@@ -197,13 +197,15 @@ proxy =
 | `BUSTAG_DEBUG` | 空 | 设成 `1` 输出详细日志（DEBUG） |
 | `TZ` | Docker 镜像里是 `Asia/Shanghai` | 时区，影响"今日更新 / 今日推荐" |
 
-### 命令行（源码运行）
+### 命令行
 
 ```bash
 python -m bustag.main check        # 自检，出问题先跑这个
 python -m bustag.main download     # 立即抓取一次，--count N 指定最多新增多少部
 python -m bustag.main recommend    # 用现有模型对未打标的影片预测
 ```
+
+Windows exe 把 `python -m bustag.main` 换成 `.\bustag.exe`，在 exe 所在的文件夹里运行，例如 `.\bustag.exe check`；Docker 里是 `docker exec -it bustag python -m bustag.main check`。
 
 `check` 会逐项打印 ✅ / ⚠️ / ❌ 和建议，有关键项失败时退出码为 1：配置（数据目录、`root_path`、代理，代理的密码、只有用户名时的用户名显示成 `***`）→ 连通首页 → 解析影片列表 → 抓一部详情并解析 → 下载它的封面（不写入缓存）→ 数据库里的影片数和打标数、模型文件和标签编码器能不能用（读得出来、两个是同一次训练的，并且试着预测一次；有问题时的提示和网页"模型"页、`recommend` 的一样）。
 
@@ -227,7 +229,7 @@ data/
 
 **抓不到数据 / 页面是空的**
 
-先跑自检（源码：`python -m bustag.main check`，Docker：`docker exec -it bustag python -m bustag.main check`），按提示处理。常见原因：
+先跑自检（Windows exe：在 exe 所在的文件夹里运行 `.\bustag.exe check`；源码：`python -m bustag.main check`；Docker：`docker exec -it bustag python -m bustag.main check`），按提示处理。常见原因：
 
 - *网站换了域名*：到 `config.ini` 把 `root_path` 改成新地址，重启。
 - *网络不通 / 要走代理*：在 `config.ini` 的 `[options]` 里写 `proxy`，或者设置系统 / 环境变量里的代理。
@@ -263,7 +265,7 @@ data/
 - 抓取：用 requests + BeautifulSoup 重写爬虫，替换已经无法运行的 aspider 和 requests-html；串行、限速、失败自动重试；识别年龄验证页和 Cloudflare 拦截并给出提示；默认地址改为 `https://www.javbus.com`，旧域名启动时提示；新增 `proxy`（http / https / socks5）、`delay`、`max_page` 配置；`count` 改为"新增影片数"。
 - 封面：由程序代取并缓存到 `data/covers/`（原来的图床已经失效，网站也有防盗链）。
 - 配置：没有 `config.ini` 时自动生成，不再退出；新增数据目录环境变量 `BUSTAG_DATA_DIR`。
-- 新增自检命令 `python -m bustag.main check`。
+- 新增自检命令 `python -m bustag.main check`；Windows exe 带参数运行时也能用这些命令（`bustag.exe check`、`download`、`recommend`），不带参数仍是启动网页服务。
 - 网页服务改用 waitress，新增 `BUSTAG_HOST`、`BUSTAG_PORT`，启动时打印访问地址，Docker 里 `docker stop` 能正常退出；修复打标、更正、上传番号、导入打标库等页面在异常输入下的错误。
 - 模型：去掉 pandas；数据不足或只有一种标签时给出中文提示；旧版本 scikit-learn 保存的模型读不了时提示重新训练，不再报 500。
 - 配置写错（语法、数字超出范围、编码）或数据目录建不了时，启动只写一行中文错误就退出，不再打印一长串异常；代理密码里的 `%` 不再被当成转义；`check` 和日志里的代理密码打码（只有用户名时用户名也打码，代理地址写错时的报错里也是）。
@@ -305,6 +307,6 @@ GitHub Actions（`.github/workflows/`）：
 |---|---|---|
 | `ci.yml` | 推送到 `master` / `revive`、Pull Request、手动 | Ubuntu 上用 Python 3.11 – 3.14、Windows 上用 3.12 跑 pytest；Linux 上再用 gunicorn（`--threads 8`，检查用的是 gthread worker）启动一次做冒烟，测试失败时也照样冒烟 |
 | `docker.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 分别构建 amd64 和 arm64 镜像并启动容器冒烟（镜像里有 LICENSE、首页、静态文件、健康检查、时区、`docker stop` 耗时），通过后推送双架构镜像到 `ghcr.io/<用户>/bustag`（Pull Request 不推送） |
-| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟，产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip |
+| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟（首页和静态文件、`bustag.exe check`），产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip |
 
 发布新版本：改 `bustag/__init__.py` 里的版本号并提交，然后 `git tag v0.3.0 && git push origin v0.3.0`（标签必须是 `v<版本号>`）。Release 里会有 exe 压缩包，ghcr.io 里会有对应版本号的镜像。

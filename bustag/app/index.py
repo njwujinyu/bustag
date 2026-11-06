@@ -21,6 +21,7 @@ import bustag.model.classifier as clf
 from bustag import __version__
 from bustag.app.local import add_local_fanhao, load_tags_db, remove_stale_uploads, save_upload
 from bustag.app.schedule import start_scheduler, add_download_job
+from bustag.main import main as command_line
 from bustag.model.persist import ModelLoadError, ModelSaveError
 from bustag.spider import db
 from bustag.spider.covers import get_cover_file
@@ -501,6 +502,11 @@ def _serve():
 
 def main():
     freeze_support()
+    if getattr(sys, 'frozen', False) and len(sys.argv) > 1:
+        # exe 不带参数（双击）时启动网页服务；在命令行里带参数运行（bustag.exe check 等）时交给命令行工具，
+        # 和源码的 python -m bustag.main 一样，参数不认识时打印用法
+        command_line(args=sys.argv[1:], prog_name=os.path.basename(sys.executable))
+        return
     try:
         _serve()
     except KeyboardInterrupt:

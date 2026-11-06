@@ -100,6 +100,36 @@ jobs:
               Get-Content -Path $outLog, $errLog -Encoding ansi -ErrorAction SilentlyContinue
           }
 
+      # root_path 指向关闭的端口，联网检查失败，退出码应该是 1。exe 按系统 ANSI 代码页输出（不认 PYTHONIOENCODING），
+      # runner 是英文系统，中文会变成 ?，所以只比对段落标题的个数和数据目录、root_path 这些 ASCII 内容
+      - name: 冒烟（bustag.exe check）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $logDir = Split-Path -Parent $env:BUSTAG_DATA_DIR
+          $outLog = Join-Path $logDir 'bustag-check.out.log'
+          $errLog = Join-Path $logDir 'bustag-check.err.log'
+          $proc = Start-Process -FilePath $exe -ArgumentList 'check' -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          $null = $proc.Handle
+          if (-not $proc.WaitForExit(120000)) {
+              Stop-Process -Id $proc.Id -Force
+              throw 'bustag.exe check 在 120 秒内没有结束'
+          }
+          $output = Get-Content -Path $outLog -Raw -Encoding ansi
+          '--- bustag.exe check 输出 ---'
+          $output
+          Get-Content -Path $errLog -Encoding ansi
+          if ($proc.ExitCode -ne 1) { throw "bustag.exe check 的退出码是 $($proc.ExitCode)，联网检查失败时应该是 1" }
+          $sections = @($output -split "`r?`n" | Where-Object { $_ -match '^== ' })
+          if ($sections.Count -ne 3) { throw "bustag.exe check 的输出应该有 3 个段落标题（配置、网站、数据），实际有 $($sections.Count) 个" }
+          foreach ($text in $env:BUSTAG_DATA_DIR, 'root_path', 'http://127.0.0.1:9') {
+              if (-not $output.Contains($text)) { throw "bustag.exe check 的输出里没有 $text" }
+          }
+          if ((Get-Content -Path $outLog, $errLog -Raw -Encoding ansi) -match 'Traceback') { throw 'bustag.exe check 输出了异常栈' }
+
       - name: 打包 zip
         id: package
         shell: pwsh

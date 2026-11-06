@@ -21,6 +21,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 
 import bustag
+import bustag.main
 from bustag.app import index, schedule
 from bustag.app.local import add_local_fanhao
 from bustag.model import classifier, persist
@@ -895,6 +896,62 @@ class TestStartup:
         assert info.value.code == 1
         assert no_serve == []
         assert any('BUSTAG_PORT=abc' in m for m in caplog.messages)
+
+    @pytest.fixture
+    def exe(self, monkeypatch, no_serve):
+        '''模拟打包后的 bustag.exe：返回带着命令行参数运行 index.main() 的函数'''
+        executable = r'C:\Tools\bustag\bustag.exe'
+        monkeypatch.setattr(sys, 'frozen', True, raising=False)
+        monkeypatch.setattr(sys, 'executable', executable)
+
+        def run(*args):
+            monkeypatch.setattr(sys, 'argv', [executable, *args])
+            index.main()
+        return run
+
+    def test_exe_without_arguments_serves(self, exe, no_serve):
+        exe()
+        assert ('run',) in no_serve
+
+    def test_exe_runs_check(self, exe, no_serve, fake_fetcher, monkeypatch, capsys):
+        monkeypatch.setattr(bustag.main, 'create_fetcher', lambda **overrides: fake_fetcher({'/': FetchError('连接被拒绝')}))
+        with pytest.raises(SystemExit) as info:
+            exe('check')
+        assert info.value.code == 1
+        lines = capsys.readouterr().out.splitlines()
+        assert [line for line in lines if line.startswith('==')] == ['== 配置', '== 网站', '== 数据']
+        assert any(line.startswith('❌ 连通：') for line in lines)
+        assert no_serve == []
+
+    def test_exe_runs_recommend(self, exe, no_serve, capsys):
+        with pytest.raises(SystemExit) as info:
+            exe('recommend')
+        assert info.value.code == 1
+        assert '还没有训练好的模型, 无法推荐' in capsys.readouterr().out
+        assert no_serve == []
+
+    def test_exe_help_lists_the_commands(self, exe, no_serve, capsys):
+        with pytest.raises(SystemExit) as info:
+            exe('--help')
+        assert info.value.code == 0
+        out = capsys.readouterr().out
+        assert out.startswith('Usage: bustag.exe ')
+        for command in ('check', 'download', 'recommend'):
+            assert re.search(rf'^\s+{command}\s', out, re.MULTILINE)
+        assert no_serve == []
+
+    def test_exe_with_unknown_command_shows_usage(self, exe, no_serve, capsys):
+        with pytest.raises(SystemExit) as info:
+            exe('chek')
+        assert info.value.code == 2
+        assert "No such command 'chek'" in capsys.readouterr().err
+        assert no_serve == []
+
+    def test_arguments_are_ignored_when_running_from_source(self, no_serve, monkeypatch):
+        monkeypatch.setattr(sys, 'frozen', False, raising=False)
+        monkeypatch.setattr(sys, 'argv', ['bustag/app/index.py', 'check'])
+        index.main()
+        assert ('run',) in no_serve
 
     def test_main_exits_when_port_cannot_be_bound(self, no_serve, monkeypatch, caplog):
         def create_server(app, host, port, threads):
