@@ -1,84 +1,27 @@
-# 基于机器学习的老司机车牌自动推荐系统
+# Bustag（维护版）
 <img src="./bustag/app/static/images/logo.png" width="300">
 
-**Bustag** 是一个基于我开发的 python 异步爬虫框架开发[aspider](https://github.com/gxtrobot/aspider)的自动车牌推荐系统, 系统原理为定时爬取最新车牌信息, 然后可以对车牌进行打标(标示是否喜欢), 打标车牌到一定数量可以进行训练并生成模型, 以后就可以基于此模型自动对下载的车牌进行预测是否喜欢, 可以过滤掉大量不喜欢的车牌, 节约时间
+给 JavBus 影片打标、训练模型并自动推荐的小工具。原理：定时抓取最新的影片信息，你对影片点"喜欢"或"不喜欢"；打标到一定数量后训练一个 KNN 模型，之后每次抓到新影片都会自动预测你是否喜欢，可以先看推荐、跳过大量不喜欢的影片，节约时间。
 
-为提高解决问题效率 ,建了个qq群
+## 关于这个版本
 
-**QQ群: 941894005**
+- 原作者 [gxtrobot](https://github.com/gxtrobot/bustag) 在 2019-10 发布 0.2.1 后停止了维护，原版的爬虫框架（aspider）、依赖版本、网站域名、封面图床和 Docker 镜像都已失效，今天装不上也跑不起来。
+- 本仓库（[njwujinyu/bustag](https://github.com/njwujinyu/bustag)）是 fork 之后的维护版，**只修不加功能**：重写爬虫、封面改为程序代取、更新依赖和 Docker 镜像；另外新增了 Windows exe 和自检命令 `check`。数据库表结构没有变，0.2.x 的 `bus.db` 可以直接用。
+- 感谢原作者 gxtrobot 的创作，许可证（MIT）保持不变，见 [LICENSE](./LICENSE)。
+- 问题请到本仓库的 [Issues](https://github.com/njwujinyu/bustag/issues) 反馈。
 
-注意, 该群仅讨论**python学习, 爬虫开发, aspider 框架学习开发, Bustag系统bug, 运行问题**等, 请勿讨论无关主题
-
-**免责声明:
-本软件仅用于技术学习使用，禁止用于商业用途，使用本软件所造成的的后果由使用者承担！
-如果你觉得这个软件不错, 可以请我喝杯冰阔落 ^_^.**
-
-<p align="center">
-<img src="./bustag/app/static/images/alipay.jpg" width="200">
-<img src="./bustag/app/static/images/wechat_pay.jpg" width="200">
-</p>
-
-# 紧急提示
-github仓库的data目录下的bus.db以前没有更新为0.2.0版的新数据库结构, 现在更新了, 注意如果用的docker, 需要使用新
-数据库, 或者移除原数据库再使用新docker 0.2.0版, 然后可以导入愿数据库的打标数据
-
-
-# windows, mac 绿色版下载地址
-  链接: https://pan.baidu.com/s/1pqarq7fOXjsbad0WN4Uaaw 提取码: budu
-
-  压缩包密码: gxtrobot
-
-# docker 版本 更新
-  运行 ```docker pull gxtrobot/bustag-app:latest``` 后重新启动项目即可
-
-
-## 更新
-
-### release 0.2.1(2019-10-12)
-- 修复几个bug
-- 增加系统启动错误信息打印, 方便排查
-
-docker版本也同步更新
-
-该版本主要是为了更好发现错误, 如果能正常运行的可以不更新
-
-### release 0.2.0(2019-10-7)
-- 一些bug修复, 如数据解析不全等
-- 多处页面优化(封面图点击放大, 页面跳转等等)
-- 启动检查config.ini, 没有自动退出
-- 手动本地文件管理, 增加手动添加番号及本地路径功能
-- 增加今日更新, 推荐数量
-- 手动上传番号, 直接打标为喜欢
-- 添加logo
-- 增加打标数据库导入功能
-
-# docker 版本 0.2.0 也已经同步更新
-
-#### 注意事项
-- 只需在data目录下创建[config.ini](https://raw.githubusercontent.com/gxtrobot/bustag/master/data/config.ini), 然后启动系统, 访问localhost:8000
-- **v0.2.0 版本有数据库结构变化, 所以和老版本数据库不兼容, 建议新建一个目录运行新版, 如需要愿数据库打标数据, 可以通过数据页面, 导入数据库完成打标数据导入**
-
-### 2019-9-6 0.1.1版发布
-  - 修复部分bug
-  - 增加windows(只在win10下测试过)), mac 绿色版, 解压直接使用,
-
-新录了个视频, 演示了如何使用docker运行项目
-- (linux/mac) https://pan.baidu.com/s/13a_7pE-uK0Jt7w2anVJV9A  提取码: za4m
-- (win10) https://pan.baidu.com/s/1dtUFvMvrYlw5plctaky46w 提取码: yd2y
+**免责声明：本软件仅用于技术学习使用，禁止用于商业用途，使用本软件所造成的后果由使用者承担！**
 
 ## 系统功能
 
-- 自动抓取最新车牌信息, 抓取频率可以自定义
-- 系统启动后自动开启一次下载, 然后安装设置抓取频率下载
-- 车牌打标功能
-- 模型训练, 基于当前所有打标数据训练模型
-- 有了模型后, 自动预测判断是否喜欢
-- 手动上传番号, 本地文件管理
-- 数据库打标数据导入
-- Docker 镜像一键运行, 省去新手配置项目的麻烦
-- 项目访问地址: localhost:8000
+- 自动抓取最新影片信息（启动后约 5 秒抓一次，之后按 `interval` 间隔抓取）
+- 影片打标（喜欢 / 不喜欢），封面由程序代取并缓存
+- 基于全部打标数据训练模型；有了模型后，每次抓取完自动对未打标的新影片预测并推荐
+- 手动上传番号、登记本地文件（或 Plex 等服务器上的视频链接）
+- 导入别人的 / 旧版本的打标数据库
+- Windows 双击运行的 exe，Docker 镜像（linux/amd64 和 linux/arm64，适合 NAS 和服务器）
 
-## 系统截图(隐藏了左边封面图片)
+## 系统截图（隐藏了左边封面图片）
 
 - 推荐页面
   ![](./docs/recommend.png)
@@ -89,7 +32,7 @@ docker版本也同步更新
 - 本地文件页面
   ![](./docs/local.png)
 
-- 本地番号, 链接上传页面
+- 本地番号、链接上传页面
   ![](./docs/local_upload.png)
 
 - 模型页面
@@ -98,110 +41,251 @@ docker版本也同步更新
 - 数据页面
   ![](./docs/data.png)
 
-## 如何运行项目
+## 如何运行
 
-  ###  windows , mac绿色版如何使用
-  下载zip包后解压缩到任意目录, 然后在目录下的data目录里, 创建文件[config.ini](https://raw.githubusercontent.com/gxtrobot/bustag/master/data/config.ini)
-    - windows 版: 执行(双击)bustag.exe
-    - mac 版: 执行(双击)bustag
-    - 浏览器访问: localhost:8000, 访问成功说明运行正常, 如果访问不成功, 可以看bustag程序窗口有无报错
+启动后在浏览器打开 `http://127.0.0.1:8000`（程序会在日志里打印这个地址）。同一局域网里的其他设备用 `http://<这台机器的 IP>:8000`。
 
-  ### 本地源代码安装
-  懂 python 开发的可以 clone 本项目, 建立一个虚拟环境并按照 requirements.txt 的 python 包后, 在项目根目录下
-  直接运行
+> 程序没有登录功能，只适合在自己的局域网里用，**不要把 8000 端口映射到公网**。
 
-```
-python bustag/app/index.py
+### Windows（exe，不用装 Python）
 
-或者安装了gunicorn
-gunicorn bustag.app.index:app --bind='0.0.0.0:8000'
-```
+1. 到本仓库的 [Releases](https://github.com/njwujinyu/bustag/releases) 页面下载 `bustag-<版本>-windows-x64.zip`。每次推送代码的构建也能在 [Actions](https://github.com/njwujinyu/bustag/actions) 里对应的运行页底部下载（需要登录 GitHub）。
+2. 解压到任意目录（不要放在 `C:\Program Files` 这类需要管理员权限的位置，程序要在 exe 旁边写 `data` 目录）。
+3. 双击 `bustag\bustag.exe`。会出现一个黑色的控制台窗口，里面是运行日志，**关掉窗口程序就退出了**。
+4. 浏览器打开 `http://127.0.0.1:8000`。
 
- ### 使用 docker 运行(推荐)
+说明：
 
-  1. 建立一个目录, 如 bustag, 然后在该目录下建一个子目录 data, data 目录用于保存配置文件以及下载数据的数据库
-  2. 在 data 下需要建立一个文件, [config.ini](https://raw.githubusercontent.com/gxtrobot/bustag/master/data/config.ini), 该文件用于设置爬取的初始地址, 以及每次下载的最大数量
-  3. 运行命令
+- 数据（数据库、配置、模型、封面缓存）放在 exe 旁边的 `data` 文件夹。升级时把新版解压到新目录，再把旧目录里的 `data` 文件夹复制过去。
+- 第一次启动较慢（本机实测约 19 秒，杀毒软件会扫描解压出来的上千个文件），之后 2–3 秒。exe 没有数字签名，Windows 可能弹出"已保护你的电脑"，点"更多信息 → 仍要运行"。
+- 端口被占用时窗口里会提示，在命令行里设置 `BUSTAG_PORT` 换一个端口：PowerShell 里 `$env:BUSTAG_PORT = '8001'; .\bustag.exe`，cmd 里 `set BUSTAG_PORT=8001` 后再运行。
+- exe 里只有网页服务；`check`、`download` 等命令行工具要用源码运行（见下）。
 
-  ```
-  linux, mac
-    docker run --rm -d -e TZ=Asia/Shanghai -e PYTHONUNBUFFERED=1 -v $(pwd)/data:/app/data -p 8000:8000 gxtrobot/bustag-app
+### Docker（NAS / 服务器，推荐）
 
-    windows powershell
-    docker run --rm -d -e TZ=Asia/Shanghai -e PYTHONUNBUFFERED=1 -v ${PWD}/data:/app/data -p 8000:8000 gxtrobot/bustag-app
+镜像是 `ghcr.io/njwujinyu/bustag`，支持 linux/amd64 和 linux/arm64，由 GitHub Actions 构建并推送。
 
-
-注: -e TZ=Asia/Shanghai , 指的是docker container的时区设置, 如果需要其他时区可自行设置, 如果不设置默认为UTC时区
-    -e PYTHONUNBUFFERED=1 , 指的是显示所有log输出, 如果不设置, 那只能看到debug 的错误log日志
-  ```
-
-## 如何使用项目
-
-### 请按照以下顺序
-
-1. 到打标页面进行打标, 达到一定数量(喜欢+不喜欢), 比如 300
-2. 到其他页面训练模型
-3. 坐等系统自动推荐
-4. 在推荐页面进行确认(确认过的数据转为打标数据)
-5. 积累更多打标数据, 再次训练模型, 打标数据越多模型效果越好
-
-### data 目录文件说明
-
-```
-|____bus.db
-|____config.ini
-|____crontab.txt
-|____model
-| |____ label_binarizer.pkl
-| |____model.pkl
+```bash
+mkdir bustag && cd bustag
+# 把本仓库的 docker-compose.yml 放进来，然后：
+docker compose up -d
 ```
 
-- config.ini, (系统配置文件, 必须, 系统启动时候需要此文件, [参考文件](./data/config.ini))
-  - root_path: 制定bus网站主页地址, 爬虫起始地址, 由于地址可能变化, 确保本机能够访问该地址, 如果需要代理才能访问, 必须开启全局代理, 系统本身无代理设置
-  - count: 每次下载总数, 建议不要太多, 500以下比较好
-  - interval: 每次下载间隔时间, 单位为秒, 建议不要低于1800秒
+或者直接用 `docker run`：
 
-- bus.db (数据库文件, 可选, 但是可以放一个[现成的库, 有 2000 条数据, 方便直接开始打标, 不需要等下载](./data/bus.db))
-- crontab.txt (定时下载配置文件, 可选, [参考例子](./docker/crontab.txt))
-- model 目录(系统训练生成的模型)
-
-## 其他问题
-
-1. 改变自动下载的频率
-   系统默认为每 30 分钟下载一次, 如果需要自定义可以在 data 下建立一个[crontab.txt](./docker/crontab.txt)文件, 该文件是基于 linux crontab 执行, ,具体可以看[wiki](https://zh.wikipedia.org/zh-hans/Cron)
-
-```
-*/30 * * * * /app/docker/run_download.sh >> /var/log/bustag.log 2>&1
+```bash
+# Linux / macOS
+docker run -d --name bustag --restart unless-stopped -p 8000:8000 -v "$(pwd)/data:/app/data" ghcr.io/njwujinyu/bustag:latest
+# Windows PowerShell
+docker run -d --name bustag --restart unless-stopped -p 8000:8000 -v "${PWD}/data:/app/data" ghcr.io/njwujinyu/bustag:latest
 ```
 
-2. 改变下载初始 url
-   因为该 url 会经常改变, 所有系统的 config.ini -> download -> root_path 定义了初始 url, 可以根据需要改变
+- `data` 目录保存数据库、配置、模型和封面缓存，**一定要挂载**，否则删除容器就丢数据。第一次启动会自动生成 `data/config.ini`。
+- 镜像标签：`latest`（默认分支 / 最新版本）、`0.3.0`、`0.3`（版本号）、`revive` 这样的分支名。
+- 时区默认 `Asia/Shanghai`（"今日更新"按这个时区算），要改就设置环境变量 `TZ`。
+- 8000 被占用时改映射的主机端口，例如 `-p 8080:8000`，然后访问 `http://127.0.0.1:8080`。
+- 更新：`docker compose pull && docker compose up -d`。看日志：`docker logs -f bustag`。自检：`docker exec -it bustag python -m bustag.main check`。
+- 要走代理时在 `data/config.ini` 里写 `proxy`；注意容器里的 `127.0.0.1` 是容器自己，代理在宿主机上就要写宿主机的局域网 IP。
 
-3. 是否可以使用代理
-   目前系统还没加入代理功能, 不过可以在 docker 设置代理访问
+**关于 ghcr.io 镜像的可见性**
 
-4. 下载数量多少合适
-   鉴于爬虫的稳定性, 不建议每次下载太多, 也可能会给 bus 服务器带来压力, 如果需要, 初次使用可以加大到 1000, 这样可以下载多点初始数据用于打标, 后面可以改为 300
+GitHub 规定，新发布的容器镜像包**默认是私有的**，此时 `docker pull` 会报 `unauthorized` 或 `denied`。有两种办法：
 
-5. 模型效果如何
-   经过一些测试, 最终使用了 KNN 模型, 效果的话谈不上非常好, 在准确率上还可以, 不过召回率相对低一些, 也就是说推荐的准确率相对高点, 但是会漏掉一些喜欢的数据.
-   所以, 鉴于定期对推荐数据进行确认, 经过确认后, 推荐数据转为打标数据, 然后重新训练,打标数据越多效果越好
+1. 仓库主人把包改成公开：GitHub 里进入自己的个人主页 → **Packages** 标签 → 点开 `bustag` → 右侧 **Package settings** → 页面最下面 **Danger Zone** → **Change visibility** → 选 **Public** → 输入包名确认。注意公开之后不能再改回私有。第一次工作流成功推送之后才会出现这个包。
+2. 保持私有，在要拉镜像的机器上先登录：到 GitHub 的 Settings → Developer settings → Personal access tokens (classic) 创建一个只勾选 `read:packages` 的令牌，然后
 
-6. 要多少打标数据才能训练模型
-   建议至少达到 300 打标数据(包括喜欢, 不喜欢), 如何尝试训练模型, 并查看模型效果值, 如不满意可以增加训练数据并重新训练
+   ```bash
+   echo <令牌> | docker login ghcr.io -u <GitHub 用户名> --password-stdin
+   ```
 
-7. 模型用了什么数据训练
-   模型目前主要使用了各种标签数据, 比如影片分类, 女优名等等, 目前没有使用到标题
+   再 `docker pull` 或 `docker compose up -d`。
 
-8. 如何改变服务器运行端口
-   服务器默认为 8000 端口, 如果需要改变, 可以修改启动 docker 容器命令, 比如 8000
+### 从源码运行
+
+需要 Python 3.11 – 3.14。
+
+```bash
+git clone https://github.com/njwujinyu/bustag.git
+cd bustag
+python -m venv .venv
+.venv\Scripts\activate          # Linux / macOS：source .venv/bin/activate
+pip install -r requirements.txt
+python -m bustag.app.index      # 也可以 python bustag/app/index.py
+```
+
+数据放在当前目录下的 `data/`（可以用 `BUSTAG_DATA_DIR` 指定别处）。
+
+用 gunicorn 运行时**只能开 1 个 worker**（定时抓取任务在进程内，多个 worker 会各抓一份）：
+
+```bash
+pip install gunicorn
+gunicorn -w 1 "bustag.app.index:create_app()" --bind 0.0.0.0:8000
+```
+
+也可以 `pip install .` 之后用 `bustag check`、`bustag download`、`bustag recommend`，作用和下面的 `python -m bustag.main …` 一样。
+
+## 如何使用
+
+按下面的顺序：
+
+1. 打开 **打标** 页，"未打标的"里是新抓到的影片，逐个点"喜欢"或"不喜欢"。打标至少 200 条，并且"喜欢"和"不喜欢"都要有（每种至少 2 条）；建议 300 条以上，越多效果越好。
+2. 打开 **模型** 页，点"开始训练"，页面上会显示准确率、覆盖率和综合评分。
+3. 之后每次定时抓取结束，程序会自动对新抓到的、还没打标的影片预测，结果出现在 **推荐** 页（"喜欢"和"不喜欢"两个标签页，页面上方显示今日更新和今日推荐的数量）。
+4. 在推荐页对每部影片点"正确"或"错误"来确认。确认过的影片会变成你的打标数据（点"错误"会把预测反过来记）。
+5. 积累了更多打标数据后，回 **模型** 页重新训练。
+
+其他页面：
+
+- **本地**：登记过本地文件或视频链接的影片，点"播放"按钮会跳转到登记的链接（只支持 http / https 地址，例如 Plex 里的播放地址）。**上传番号** 标签页里每行写 `番号` 或 `番号,链接`，勾选"全部打标为喜欢"可以批量打标；库里还没有的番号会加入下载队列。
+- **数据**：导入另一个 bustag 的 `bus.db` 里的打标数据（0.2.x 以前的旧格式也支持）；库里没有的番号会加入下载队列。
+- **关于**：免责声明和项目信息。
+
+## 配置
+
+### config.ini
+
+在数据目录里，第一次启动时自动生成（带中文注释），改完需要**重启程序**才生效。
+
+```ini
+# bustag 配置文件。首次启动时自动生成，修改后重启程序生效。
+
+[download]
+# JavBus 网址。网站换域名时改这里
+root_path = https://www.javbus.com
+# 每次抓取最多新增多少部影片
+count = 100
+# 自动抓取的间隔（秒），10800 秒 = 3 小时
+interval = 10800
+# 高级选项，一般不用改。需要时去掉行首的 # 再修改：
+# 两次请求之间的最小间隔（秒）
+# delay = 1.5
+# 每次抓取最多翻多少页列表
+# max_page = 30
+
+[options]
+# 代理地址，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+# 留空表示使用系统或环境变量里的代理设置
+proxy =
+```
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `download.root_path` | `https://www.javbus.com` | 网站地址，网站换域名时改这里。已知失效的旧域名（`busdmm.work`、`cdnbus.bid`）启动时会在日志里醒目提示，程序不会自动改你的文件 |
+| `download.count` | `100` | 每次抓取最多新增多少部影片（不是请求数）。初次使用想多抓一些可以临时调大，每部约需 2–4 秒；日常 100 以内就够了 |
+| `download.interval` | `10800` | 自动抓取的间隔，单位秒（10800 = 3 小时），不建议低于 1800 |
+| `download.delay` | `1.5` | 两次请求之间的最小间隔，单位秒。别调得太小，太频繁容易被网站拦截，也会给网站带来压力 |
+| `download.max_page` | `30` | 每次抓取最多翻多少页列表 |
+| `options.proxy` | 空 | 代理地址，支持 `http://`、`https://`、`socks5://`，例如 `http://127.0.0.1:7890`、`socks5://127.0.0.1:1080`。留空表示使用系统 / 环境变量里的代理（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`） |
+
+一次抓取在这些情况下结束：新增够了 `count` 部；翻到了 `max_page` 页；连续 3 页都没有新影片（说明已经追上）；没有下一页；被网站拦截。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `BUSTAG_DATA_DIR` | exe 旁边的 `data`，源码 / Docker 是当前目录下的 `data` | 数据目录，相对路径按当前目录解析，不存在会自动创建 |
+| `BUSTAG_HOST` | `0.0.0.0` | 监听地址，只想本机访问时设成 `127.0.0.1` |
+| `BUSTAG_PORT` | `8000` | 监听端口（1–65535），Docker 里改了端口还要改 `-p` 映射 |
+| `BUSTAG_DEBUG` | 空 | 设成 `1` 输出详细日志（DEBUG） |
+| `TZ` | Docker 镜像里是 `Asia/Shanghai` | 时区，影响"今日更新 / 今日推荐" |
+
+### 命令行（源码运行）
+
+```bash
+python -m bustag.main check        # 自检，出问题先跑这个
+python -m bustag.main download     # 立即抓取一次，--count N 指定最多新增多少部
+python -m bustag.main recommend    # 用现有模型对未打标的影片预测
+```
+
+`check` 会逐项打印 ✅ / ⚠️ / ❌ 和建议，有关键项失败时退出码为 1：配置（数据目录、`root_path`、代理）→ 连通首页 → 解析影片列表 → 抓一部详情并解析 → 下载它的封面（不写入缓存）→ 数据库里的影片数和打标数、模型是否可用。
+
+### 数据目录
 
 ```
-修改为8000端口, 注意:后面的8000不要变, 然后可以通过localhost:8000访问
-
-docker run --rm -d -v $(pwd)/data:/app/data -p 8000:8000 gxtrobot/bustag-app
+data/
+├── bus.db                影片、标签和打标数据（SQLite，运行时旁边会有 bus.db-wal 和 bus.db-shm）
+├── config.ini            配置文件
+├── model/
+│   ├── model.pkl         训练好的模型
+│   └── label_binarizer.pkl   标签编码器
+└── covers/               封面缓存，可以随时删除，用到时会重新下载
 ```
 
-9. 如何备份数据库
-   系统使用的数据库保存在 data 目录下的 bus.db, 如果有需要可以将此文件拷贝一份作为备份, 比如在打标测试模型时, 如果不想使用当前打标数据, 可以将数据库恢复到原来的版本
-   该数据库为 sqlite 格式, 可以直接使用软件打开, 比如 [DB Browser for Sqlite](https://sqlitebrowser.org/), 该软件支持多平台
+备份就是关掉程序后复制整个 `data` 目录。`bus.db` 是普通的 SQLite 文件，可以用 [DB Browser for SQLite](https://sqlitebrowser.org/) 之类的软件打开。
+
+## 常见问题
+
+**抓不到数据 / 页面是空的**
+
+先跑自检（源码：`python -m bustag.main check`，Docker：`docker exec -it bustag python -m bustag.main check`），按提示处理。常见原因：
+
+- *网站换了域名*：到 `config.ini` 把 `root_path` 改成新地址，重启。
+- *网络不通 / 要走代理*：在 `config.ini` 的 `[options]` 里写 `proxy`，或者设置系统 / 环境变量里的代理。
+- *被拦截*：日志里会写明原因，例如"被年龄验证页拦截"、"Cloudflare 1010：请求特征被拦截"、"Cloudflare 人机验证页拦截"、HTTP 403 / 429。程序已经按浏览器的方式发请求（桌面浏览器的 User-Agent、简体中文的 `Accept-Language`、年龄验证 cookie），仍被拦截时一般是网络出口（IP）的问题：换个网络或代理，等一阵再试，并且不要把 `delay` 调小。
+
+**封面不显示**
+
+封面由本程序通过 `/cover/<番号>` 代取（带上网站要求的 Referer），第一次显示时下载并缓存到 `data/covers/`。下载失败时显示"封面加载失败"的占位图，刷新页面会重试。旧库里的封面地址（`pics.javcdn.pw`）已经失效，程序显示时会自动换算成能用的地址，不用改库。
+
+**从 0.2.x 升级**
+
+1. 把旧的 `bus.db` 放进新版的数据目录（表结构没变，不用迁移）。
+2. 如果旧的 `config.ini` 里 `root_path` 是 `busdmm.work`、`cdnbus.bid` 这类旧域名，改成 `https://www.javbus.com`，或者直接删掉旧的 `config.ini` 让程序重新生成。
+3. **删除旧的 `model` 目录**，在"模型"页重新训练。scikit-learn 升级之后旧模型读不了；万一没删，程序也只会提示"需要重新训练"，不会报错退出。
+4. 0.1.x 的旧库表结构不一样，不能直接用，可以在"数据"页导入它的打标数据。
+
+**要多少打标数据才能训练？模型用了什么？效果如何？**
+
+至少 200 条，并且"喜欢"和"不喜欢"都要有。模型是 KNN（11 个近邻），输入是影片的标签：类别、演员、导演、製作商、發行商、系列，没有用到标题。原作者测试的结果是准确率相对高、覆盖率相对低，也就是推荐的比较准，但会漏掉一些你可能喜欢的影片，所以要经常在推荐页确认，确认后的数据会进入下一次训练。
+
+**为什么有的番号抓不到第二部？**
+
+网站首页偶尔会出现同一个番号对应两部影片（页面地址带日期后缀）。库里番号是唯一的，只保存先抓到的那部。
+
+**端口被占用 / 想改端口**
+
+设置环境变量 `BUSTAG_PORT`。Docker 里改主机端口即可（`-p 8080:8000`）。
+
+## 更新记录
+
+### 0.3.0（维护版第一个版本）
+
+- 抓取：用 requests + BeautifulSoup 重写爬虫，替换已经无法运行的 aspider 和 requests-html；串行、限速、失败自动重试；识别年龄验证页和 Cloudflare 拦截并给出提示；默认地址改为 `https://www.javbus.com`，旧域名启动时提示；新增 `proxy`（http / https / socks5）、`delay`、`max_page` 配置；`count` 改为"新增影片数"。
+- 封面：由程序代取并缓存到 `data/covers/`（原来的图床已经失效，网站也有防盗链）。
+- 配置：没有 `config.ini` 时自动生成，不再退出；新增数据目录环境变量 `BUSTAG_DATA_DIR`。
+- 新增自检命令 `python -m bustag.main check`。
+- 网页服务改用 waitress，新增 `BUSTAG_HOST`、`BUSTAG_PORT`，启动时打印访问地址，Docker 里 `docker stop` 能正常退出；修复打标、更正、上传番号、导入打标库等页面在异常输入下的错误。
+- 模型：去掉 pandas；数据不足或只有一种标签时给出中文提示；旧版本 scikit-learn 保存的模型读不了时提示重新训练，不再报 500。
+- 打包：支持 Python 3.11 – 3.14，依赖改为版本范围；Docker 镜像（linux/amd64、linux/arm64）和 Windows exe 由 GitHub Actions 构建；定时抓取完全由程序自己调度，不再用 cron。
+- 移除：原 README 里的打赏码、QQ 群、网盘下载和旧 Docker Hub 镜像，仓库里的示例数据库 `data/bus.db`。
+
+### 原作者 gxtrobot 的版本
+
+- 0.2.1（2019-10-12）：修复几个 bug，增加启动错误信息打印。
+- 0.2.0（2019-10-07）：数据库结构变化；封面点击放大；手动上传番号和本地文件管理；今日更新和推荐数量；打标数据库导入；logo。
+- 0.1.1（2019-09-06）：修复部分 bug；增加 Windows、macOS 绿色版。
+
+## 开发
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest        # 离线测试；访问真网站的测试默认跳过，设置 BUSTAG_LIVE_TEST=1 才运行
+```
+
+本地构建 Windows exe（需要在 Windows 上）和 Docker 镜像：
+
+```bash
+pip install -r requirements.txt "pyinstaller>=6,<7"
+pyinstaller --noconfirm bustag.spec    # 产物在 dist/bustag/，双击里面的 bustag.exe
+docker build -t bustag:dev .
+```
+
+GitHub Actions（`.github/workflows/`）：
+
+| 工作流 | 触发 | 做什么 |
+|---|---|---|
+| `ci.yml` | 推送到 `master` / `revive`、Pull Request、手动 | Ubuntu 上用 Python 3.11 – 3.14、Windows 上用 3.12 跑 pytest；Linux 上再用 gunicorn 启动一次做冒烟 |
+| `docker.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 分别构建 amd64 和 arm64 镜像并启动容器冒烟（首页、静态文件、健康检查、时区、`docker stop` 耗时），通过后推送双架构镜像到 `ghcr.io/<用户>/bustag`（Pull Request 不推送） |
+| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟，产物 `bustag-<版本>-windows-x64.zip`；`v*` 标签时创建 GitHub Release 并附上 zip |
+
+发布新版本：改 `bustag/__init__.py` 里的版本号并提交，然后 `git tag v0.3.0 && git push origin v0.3.0`（标签必须是 `v<版本号>`）。Release 里会有 exe 压缩包，ghcr.io 里会有对应版本号的镜像。
