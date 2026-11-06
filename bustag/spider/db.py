@@ -9,7 +9,9 @@ import json
 from peewee import *
 from enum import IntEnum
 from collections import defaultdict
+from urllib.parse import urlparse
 from bustag.util import logger, get_data_path, format_datetime, get_now_time, get_full_url
+from bustag.spider.covers import normalize_cover_url
 
 DB_FILE = 'bus.db'
 db = SqliteDatabase(get_data_path(DB_FILE), pragmas={
@@ -50,14 +52,15 @@ class Item(BaseModel):
         item_release_date = date.fromisoformat(meta_info.pop('release_date'))
         item_fanhao = meta_info.pop('fanhao')
         item_title = meta_info.pop('title')
-        item_url = meta_info.pop('url')
+        item_url = urlparse(meta_info.pop('url')).path
         item_meta = json.dumps(meta_info)
         try:
-            item = Item.create(fanhao=item_fanhao, title=item_title, url=item_url,
-                               release_date=item_release_date, meta_info=item_meta)
+            with db.atomic():
+                item = Item.create(fanhao=item_fanhao, title=item_title, url=item_url,
+                                   release_date=item_release_date, meta_info=item_meta)
             logger.debug(f'save item:  {item}')
         except IntegrityError:
-            logger.debug('Item exists: {item_fanhao}')
+            logger.debug(f'Item exists: {item_fanhao}')
             raise ExistError()
         else:
             return item
@@ -65,9 +68,8 @@ class Item(BaseModel):
     @staticmethod
     def loadit(item):
         item.url = get_full_url(item.url)
-        meta = json.loads(item.meta_info)
-        item.cover_img_url = meta['cover_img_url']
-        series = item.fanhao.split('-')[0]
+        meta = json.loads(item.meta_info or '{}')
+        item.cover_img_url = normalize_cover_url(meta.get('cover_img_url'))
         item.add_date = format_datetime(item.add_date)
 
     @staticmethod
@@ -108,7 +110,7 @@ class Tag(BaseModel):
     @staticmethod
     def saveit(tag_info):
         tag, created = Tag.get_or_create(type_=tag_info.type, value=tag_info.value,
-                                         defaults={'url': tag_info.link})
+                                         defaults={'url': urlparse(tag_info.link).path})
         if created:
             logger.debug(f'save tag:  {tag}')
         return tag
@@ -204,7 +206,7 @@ class LocalItem(BaseModel):
             return local_item
 
     def __repr__(self):
-        return f'<LocalItem {self.fanhao}({self.path})>'
+        return f'<LocalItem {self.item_id}({self.path})>'
 
     @staticmethod
     def update_play(id):
@@ -223,21 +225,21 @@ class LocalItem(BaseModel):
 
 
 def save(meta_info, tags):
+    '''
+    影片和标签在一个事务里入库。返回新建的 Item；番号或 url 已存在时返回 None
+    '''
     item_title = meta_info['title']
-    tag_objs = []
-    try:
-        item = Item.saveit(meta_info)
-    except ExistError:
-        logger.debug(f'item exists: {item_title}')
-    else:
-        with db.atomic():
-            for tag_info in tags:
-                tag = Tag.saveit(tag_info)
-                if tag:
-                    tag_objs.append(tag)
-        with db.atomic():
-            for tag_obj in tag_objs:
-                ItemTag.saveit(item, tag_obj)
+    with db.atomic():
+        try:
+            item = Item.saveit(meta_info)
+        except ExistError:
+            logger.debug(f'item exists: {item_title}')
+            return None
+        for tag_info in tags:
+            tag = Tag.saveit(tag_info)
+            if tag:
+                ItemTag.saveit(item, tag)
+    return item
 
 
 def test_save():
@@ -286,10 +288,8 @@ def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
     items = get_tags_for_items(q)
     for item in items:
         Item.loadit(item)
-        if hasattr(item, 'item_rate'):
-            item.rate_value = item.item_rate.rate_value
-        else:
-            item.rate_value = None
+        item_rate = getattr(item, 'item_rate', None)
+        item.rate_value = item_rate.rate_value if item_rate is not None else None
         items_list.append(item)
 
     total_pages = (total_items + page_size - 1) // page_size
