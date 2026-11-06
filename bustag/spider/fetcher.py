@@ -166,7 +166,8 @@ def create_fetcher(**overrides):
     options = {
         'root_path': APP_CONFIG['download.root_path'],
         'proxy': APP_CONFIG.get('options.proxy', '').strip() or None,
-        'delay': float(APP_CONFIG['download.delay']),
     }
     options.update(overrides)
+    if 'delay' not in options:
+        options['delay'] = float(APP_CONFIG['download.delay'])
     return Fetcher(**options)

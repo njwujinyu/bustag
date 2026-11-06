@@ -24,7 +24,7 @@ from bustag.spider import db
 from bustag.spider.covers import get_cover_file
 from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
                               Item, LocalItem, DBError, db as dbconn)
-from bustag.util import logger, get_data_path, get_resource_dir
+from bustag.util import logger, get_data_path, get_resource_dir, wait_for_enter_if_console
 
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 8000
@@ -326,21 +326,6 @@ def _exit_on_sigterm():
         pass
 
 
-def _wait_for_enter():
-    '''
-    双击运行 exe 时，出错信息会随窗口一起消失，所以先等用户按回车。
-    源码运行、Docker、重定向输出等没有交互控制台的情况不等。
-    '''
-    if not getattr(sys, 'frozen', False):
-        return
-    if sys.stdin is None or not sys.stdin.isatty():
-        return
-    try:
-        input('按回车键退出 ...')
-    except (EOFError, KeyboardInterrupt, OSError):
-        pass
-
-
 def _cannot_listen(host, port, ex):
     return StartupError(f'无法监听 {host}:{port}（{ex}）。端口可能已被占用，'
                         '可以设置环境变量 BUSTAG_PORT 换一个端口')
@@ -393,11 +378,11 @@ def main():
         pass
     except StartupError as ex:
         logger.error(ex)
-        _wait_for_enter()
+        wait_for_enter_if_console()
         sys.exit(1)
     except Exception:
         logger.exception('服务异常退出')
-        _wait_for_enter()
+        wait_for_enter_if_console()
         sys.exit(1)
 
 

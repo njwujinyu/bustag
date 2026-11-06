@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import sklearn
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import MultiLabelBinarizer
 
 import bustag
 from bustag.app import index, schedule
@@ -416,6 +417,12 @@ class TestModelPage:
         assert '无法读取' in text
         assert '重新训练' in text
         assert '还没有训练过模型' not in text
+
+    def test_old_format_holding_another_object_shows_reason(self, wsgi, data_dir):
+        (data_dir / classifier.MODEL_FILE).write_bytes(pickle.dumps((MultiLabelBinarizer(), SCORES)))
+        text = wsgi.get('/model').text
+        assert '模型文件 model.pkl 格式不对' in text
+        assert '准确率' not in text
 
     def test_training(self, wsgi, data_dir, make_item):
         add_rated(make_item, 100, like=True)

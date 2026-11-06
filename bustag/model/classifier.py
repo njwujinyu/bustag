@@ -5,11 +5,10 @@ import sklearn
 from sklearn.metrics import f1_score, recall_score, accuracy_score, precision_score, confusion_matrix
 from sklearn.neighbors import KNeighborsClassifier
 from bustag.model.prepare import prepare_data, prepare_predict_data
-from bustag.model.persist import ModelLoadError, read_model, dump_model
+from bustag.model.persist import MODEL_FILE, dump_model, read_classifier
 from bustag.spider.db import RATE_TYPE, ItemRate
-from bustag.util import logger, get_data_path, MODEL_PATH
+from bustag.util import logger, get_data_path
 
-MODEL_FILE = MODEL_PATH + 'model.pkl'
 MIN_TRAIN_NUM = 200
 
 
@@ -19,18 +18,9 @@ def load():
 
     Raises:
         FileNotFoundError: 还没有训练过模型
-        ModelLoadError: 模型文件读不了（多半是 scikit-learn 版本升级过），需要重新训练
+        ModelLoadError: 模型文件读不了或者格式不对，需要重新训练
     '''
-    data = read_model(get_data_path(MODEL_FILE))
-    try:
-        if isinstance(data, dict):
-            model, scores, saved_version = data['model'], data['scores'], data.get('sklearn_version')
-        else:
-            # 旧版本程序保存的 (model, scores)，没有记录 scikit-learn 版本
-            model, scores = data
-            saved_version = None
-    except (KeyError, TypeError, ValueError) as ex:
-        raise ModelLoadError('模型文件格式不对, 请到网页的"模型"页点击"开始训练"重新训练') from ex
+    model, scores, saved_version = read_classifier(get_data_path(MODEL_FILE))
     if saved_version is None:
         logger.warning(f'模型文件是旧版本程序保存的，没有记录 scikit-learn 版本（当前是 {sklearn.__version__}），'
                        '建议到网页的"模型"页重新训练')
@@ -43,12 +33,6 @@ def load():
 def create_model():
     knn = KNeighborsClassifier(n_neighbors=11)
     return knn
-
-
-def predict(X_test):
-    model, _ = load()
-    y_pred = model.predict(X_test)
-    return y_pred
 
 
 def train():
@@ -88,20 +72,19 @@ def evaluate(confusion_mtx, y_test, y_pred):
 
 def recommend():
     '''
-    use trained model to recommend items
+    用训练好的模型给还没打标的影片打系统评分，返回 (预测部数, 推荐部数)；没有新影片时返回 (0, 0)
 
-    还没有训练过模型时抛 FileNotFoundError；模型文件读不了时写一条警告日志并返回 None
+    Raises:
+        FileNotFoundError: 还没有训练过模型
+        ModelLoadError: 模型或标签编码器读不了、格式不对，需要重新训练
     '''
-    try:
-        ids, X = prepare_predict_data()
-        if len(X) == 0:
-            logger.info('没有需要推荐的新影片')
-            return
-        total = len(ids)
-        y_pred = predict(X)
-    except ModelLoadError as ex:
-        logger.warning(f'无法推荐：{ex}')
-        return
+    model, _ = load()
+    ids, X = prepare_predict_data()
+    if not ids:
+        logger.info('没有需要推荐的新影片')
+        return 0, 0
+    total = len(ids)
+    y_pred = model.predict(X)
     count = 0
     for id, y in zip(ids, y_pred):
         if y == 1:

@@ -11,6 +11,7 @@ import pytest
 
 from bustag import util
 from bustag.app import schedule
+from bustag.model.persist import MODEL_FILE
 from bustag.spider import bus_spider
 
 
@@ -157,3 +158,9 @@ class TestJobs:
         caplog.set_level(logging.INFO, logger='bustag')
         schedule.recommend()
         assert '还没有训练好的模型，跳过推荐' in caplog.messages
+
+    def test_recommend_with_unreadable_model_only_logs(self, data_dir, caplog):
+        (data_dir / MODEL_FILE).write_bytes(b'garbage')
+        schedule.recommend()
+        assert any(m.startswith('无法推荐：模型文件 model.pkl 无法读取') and m.endswith('重新训练')
+                   for m in caplog.messages)

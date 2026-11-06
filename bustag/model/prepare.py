@@ -6,10 +6,8 @@ from collections import Counter
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
 from bustag.spider.db import get_items, RATE_TYPE
-from bustag.model.persist import dump_model, read_model
-from bustag.util import get_data_path, MODEL_PATH
-
-BINARIZER_PATH = MODEL_PATH + 'label_binarizer.pkl'
+from bustag.model.persist import BINARIZER_PATH, dump_model, read_binarizer
+from bustag.util import get_data_path
 
 
 def load_data():
@@ -101,7 +99,7 @@ def prepare_predict_data():
     '''
     Raises:
         FileNotFoundError: 还没有训练过模型
-        ModelLoadError: 保存的二进制化器读不了，需要重新训练
+        ModelLoadError: 保存的标签编码器读不了或者格式不对，需要重新训练
     '''
     # get not rated data
     rate_type = None
@@ -109,7 +107,7 @@ def prepare_predict_data():
     page = None
     unrated_items, _ = get_items(
         rate_type=rate_type, rate_value=rate_value, page=page)
-    mlb = read_model(get_data_path(BINARIZER_PATH))
+    mlb = read_binarizer(get_data_path(BINARIZER_PATH))
     rows = [as_dict(item) for item in unrated_items]
     X = mlb.transform([row['tags'] for row in rows])
     return [row['id'] for row in rows], X

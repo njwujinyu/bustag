@@ -374,3 +374,13 @@ class TestCreateFetcher:
         assert fetcher.delay == 0
         assert fetcher.retries == 1
         assert fetcher.root_path == util.APP_CONFIG['download.root_path']
+
+    def test_explicit_delay_does_not_read_config(self, monkeypatch):
+        monkeypatch.setitem(util.APP_CONFIG, 'download.delay', '不是数字')
+        assert create_fetcher(delay=0).delay == 0
+
+    def test_percent_in_proxy_from_config_file(self, data_dir):
+        proxy = 'http://alice:p%40ss@127.0.0.1:7890'
+        (data_dir / 'config.ini').write_text(f'[options]\nproxy = {proxy}\n', encoding='utf-8')
+        util.load_config()
+        assert create_fetcher().proxies == {'http': proxy, 'https': proxy}

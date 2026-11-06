@@ -13,10 +13,11 @@ import sklearn
 import sklearn.base
 from click.testing import CliRunner
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import MultiLabelBinarizer
 
 from bustag import main, util
-from bustag.model import classifier
-from bustag.model.persist import ModelLoadError
+from bustag.model import classifier, prepare
+from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, ModelLoadError
 from bustag.spider import bus_spider
 from bustag.spider.bus_spider import DownloadResult
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate
@@ -74,10 +75,20 @@ class TestDownload:
         assert calls == []
 
 
+def save_model_files(data_dir, model=None, binarizer=None):
+    '''写 model.pkl 和 label_binarizer.pkl；不传内容时写一份能用的'''
+    if model is None:
+        model = {'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': sklearn.__version__}
+    if binarizer is None:
+        binarizer = MultiLabelBinarizer().fit([['g1', 's1']])
+    (data_dir / MODEL_FILE).write_bytes(pickle.dumps(model))
+    (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(binarizer))
+
+
 class TestRecommend:
     def test_without_model(self):
         result = invoke('recommend')
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert '还没有训练好的模型, 无法推荐' in result.output
 
     def test_with_model(self, monkeypatch):
@@ -85,6 +96,28 @@ class TestRecommend:
         monkeypatch.setattr(classifier, 'recommend', lambda: calls.append('recommend') or (3, 1))
         assert invoke('recommend').exit_code == 0
         assert calls == ['recommend']
+
+    def test_nothing_new_to_recommend(self, data_dir):
+        save_model_files(data_dir)
+        assert invoke('recommend').exit_code == 0
+
+    @pytest.mark.parametrize('model, binarizer, reason', [
+        (b'garbage', None, '模型文件 model.pkl 无法读取'),
+        (pickle.dumps((MultiLabelBinarizer(), SCORES)), None, '模型文件 model.pkl 格式不对'),
+        (None, b'garbage', '模型文件 label_binarizer.pkl 无法读取'),
+    ])
+    def test_unusable_model_files(self, data_dir, make_item, model, binarizer, reason):
+        make_item('ABC-001', tags=[('genre', 'g1')])
+        save_model_files(data_dir)
+        if model is not None:
+            (data_dir / MODEL_FILE).write_bytes(model)
+        if binarizer is not None:
+            (data_dir / BINARIZER_PATH).write_bytes(binarizer)
+        result = invoke('recommend')
+        assert result.exit_code == 1
+        assert f'无法推荐：{reason}' in result.output
+        assert '重新训练' in result.output
+        assert ItemRate.get_by_fanhao('ABC-001') is None
 
 
 @pytest.fixture
@@ -109,7 +142,7 @@ def site(monkeypatch, fake_fetcher, page):
 
 
 def model_path(data_dir):
-    return data_dir / classifier.MODEL_FILE
+    return data_dir / MODEL_FILE
 
 
 class TestCheck:
@@ -182,6 +215,19 @@ class TestCheck:
         monkeypatch.setenv('HTTPS_PROXY', 'http://10.0.0.1:3128')
         assert f'{OK} 代理：没有设置，使用系统 / 环境变量里的代理 http://10.0.0.1:3128' in invoke('check').output
 
+    def test_proxy_passwords_are_hidden(self, site, monkeypatch):
+        monkeypatch.setitem(util.APP_CONFIG, 'options.proxy', 'http://alice:s3cret@127.0.0.1:7890')
+        output = invoke('check').output
+        assert f'{OK} 代理：http://alice:***@127.0.0.1:7890（config.ini 里设置）' in output
+        assert 's3cret' not in output
+
+    def test_environment_proxy_password_is_hidden(self, site, monkeypatch):
+        monkeypatch.delenv('NO_PROXY')
+        monkeypatch.setenv('HTTPS_PROXY', 'http://bob:pa55@10.0.0.1:3128')
+        output = invoke('check').output
+        assert f'{OK} 代理：没有设置，使用系统 / 环境变量里的代理 http://bob:***@10.0.0.1:3128' in output
+        assert 'pa55' not in output
+
     def test_data_counts(self, site, make_item):
         make_item('ABC-001')
         make_item('ABC-002')
@@ -190,33 +236,40 @@ class TestCheck:
         assert '：影片 2 部，打标 1 条' in invoke('check').output
 
     def test_usable_model(self, site, data_dir):
-        model_path(data_dir).write_bytes(pickle.dumps(
-            {'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': sklearn.__version__}))
+        save_model_files(data_dir)
         assert f'{OK} 模型：可用（{model_path(data_dir)}）' in invoke('check').output
-
-    def test_unreadable_model(self, site, data_dir):
-        model_path(data_dir).write_bytes(b'garbage')
-        result = invoke('check')
-        assert (f'{WARN} 模型：{model_path(data_dir)} 读取失败（UnpicklingError），'
-                '多半是旧版本 scikit-learn 训练的，版本不兼容') in result.output
-        assert '   建议：在网页的"模型"页重新训练' in result.output
-        assert result.exit_code == 0
 
     def test_model_from_other_sklearn_version(self, site, data_dir, monkeypatch):
         with monkeypatch.context() as patch:
             patch.setattr(sklearn.base, '__version__', '0.21.3')
-            content = pickle.dumps({'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': '0.21.3'})
-        model_path(data_dir).write_bytes(content)
+            content = {'model': KNeighborsClassifier(), 'scores': SCORES, 'sklearn_version': '0.21.3'}
+            save_model_files(data_dir, model=content)
         output = invoke('check').output
         assert f'{WARN} 模型：可以读取，但是用 scikit-learn 0.21.3 训练的（当前 {sklearn.__version__}）' in output
         assert '   建议：在网页的"模型"页重新训练' in output
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：check 对格式不对的模型文件报「可用」，网页和推荐却读不了')
-    def test_model_with_wrong_format(self, site, data_dir):
-        model_path(data_dir).write_bytes(pickle.dumps({'model': KNeighborsClassifier()}))
-        with pytest.raises(ModelLoadError):
+    @pytest.mark.parametrize('model, binarizer', [
+        (b'garbage', None),
+        (pickle.dumps({'model': KNeighborsClassifier()}), None),
+        (pickle.dumps(MultiLabelBinarizer().fit([['g1']])), None),
+        (pickle.dumps((MultiLabelBinarizer(), SCORES)), None),
+        (None, b'garbage'),
+        (None, pickle.dumps(KNeighborsClassifier())),
+    ])
+    def test_unusable_model_files_match_the_web_page(self, site, data_dir, model, binarizer):
+        '''⚠ 后面的文字就是网页"模型"页（读模型）或推荐（读标签编码器）报的原因'''
+        save_model_files(data_dir)
+        if model is not None:
+            model_path(data_dir).write_bytes(model)
+        if binarizer is not None:
+            (data_dir / BINARIZER_PATH).write_bytes(binarizer)
+        with pytest.raises(ModelLoadError) as info:
             classifier.load()
-        assert f'{OK} 模型' not in invoke('check').output
+            prepare.prepare_predict_data()
+        result = invoke('check')
+        assert f'{WARN} 模型：{info.value}' in result.output.splitlines()
+        assert f'{OK} 模型' not in result.output
+        assert result.exit_code == 0
 
 
 def test_module_runs_as_script(tmp_path):

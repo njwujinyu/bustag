@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.executors.base import BaseExecutor, run_job
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from bustag.model.persist import ModelLoadError
 from bustag.spider import bus_spider
 from bustag.util import APP_CONFIG, logger
 
@@ -45,6 +46,7 @@ class SerialExecutor(BaseExecutor):
 
 
 def recommend():
+    '''抓取后的推荐：没有模型或模型读不了时只写日志，不影响后面的任务'''
     # 模型模块要导入 scikit-learn，较慢，只在用到时导入
     import bustag.model.classifier as clf
 
@@ -52,6 +54,8 @@ def recommend():
         clf.recommend()
     except FileNotFoundError:
         logger.info('还没有训练好的模型，跳过推荐')
+    except ModelLoadError as ex:
+        logger.warning(f'无法推荐：{ex}')
 
 
 def download_job():

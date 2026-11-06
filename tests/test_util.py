@@ -113,6 +113,97 @@ class TestConfig:
         assert util.APP_CONFIG is config
         assert 'stale' not in config
 
+    def test_percent_is_kept_as_written(self, data_dir):
+        proxy = 'http://alice:p%40ss@127.0.0.1:7890'
+        (data_dir / 'config.ini').write_text(f'[options]\nproxy = {proxy}\n', encoding='utf-8')
+        util.load_config()
+        assert util.APP_CONFIG['options.proxy'] == proxy
+
+    @pytest.mark.parametrize('text, reason', [
+        ('[download]\ncount = 1\ncount = 2\n', '第 3 行的 count 在 [download] 里重复出现'),
+        ('[download]\ncount = 1\n\n[download]\n', '第 4 行的 [download] 重复出现'),
+        ('count = 5\n', '第 1 行不属于任何节，文件开头要先写节名（如 [download]）'),
+        ('[download]\ncount = 5\n这一行没有等号\n', '第 3 行无法识别，每行应该是"键 = 值"、[节名] 或 # 开头的注释'),
+    ])
+    def test_syntax_errors_name_the_line(self, data_dir, text, reason):
+        path = data_dir / 'config.ini'
+        path.write_text(text, encoding='utf-8')
+        with pytest.raises(util.ConfigError) as info:
+            util.load_config()
+        assert str(info.value) == (f'配置文件 {path} 有错：{reason}，'
+                                   '请修改或删除后重启（删除后会重新生成默认配置）')
+
+    @pytest.mark.parametrize('key, value, reason', [
+        ('interval', '3h', '[download] interval = 3h 不是有效的秒数（需要 ≥ 60 的整数）'),
+        ('interval', '59', '[download] interval = 59 不是有效的秒数（需要 ≥ 60 的整数）'),
+        ('interval', '600.5', '[download] interval = 600.5 不是有效的秒数（需要 ≥ 60 的整数）'),
+        ('count', '0', '[download] count = 0 不是有效的数量（需要 ≥ 1 的整数）'),
+        ('count', '一百', '[download] count = 一百 不是有效的数量（需要 ≥ 1 的整数）'),
+        ('count', '', '[download] count = （空） 不是有效的数量（需要 ≥ 1 的整数）'),
+        ('max_page', '-3', '[download] max_page = -3 不是有效的页数（需要 ≥ 1 的整数）'),
+        ('delay', '-1', '[download] delay = -1 不是有效的秒数（需要 ≥ 0 的数字）'),
+        ('delay', 'nan', '[download] delay = nan 不是有效的秒数（需要 ≥ 0 的数字）'),
+        ('delay', 'inf', '[download] delay = inf 不是有效的秒数（需要 ≥ 0 的数字）'),
+        ('delay', '1.5s', '[download] delay = 1.5s 不是有效的秒数（需要 ≥ 0 的数字）'),
+    ])
+    def test_invalid_numbers(self, data_dir, key, value, reason):
+        path = data_dir / 'config.ini'
+        path.write_text(f'[download]\n{key} = {value}\n', encoding='utf-8')
+        with pytest.raises(util.ConfigError) as info:
+            util.load_config()
+        assert str(info.value) == (f'配置文件 {path} 有错：{reason}，'
+                                   '请修改或删除后重启（删除后会重新生成默认配置）')
+
+    def test_boundary_numbers_are_kept_as_strings(self, data_dir):
+        (data_dir / 'config.ini').write_text(
+            '[download]\ncount = 1\ninterval = 60\ndelay = 0\nmax_page = 1\n', encoding='utf-8')
+        util.load_config()
+        assert [util.APP_CONFIG['download.' + key] for key in ('count', 'interval', 'delay', 'max_page')] == \
+            ['1', '60', '0', '1']
+
+    def test_failed_reload_keeps_current_config(self, data_dir):
+        path = data_dir / 'config.ini'
+        path.write_text('[download]\ncount = 7\n', encoding='utf-8')
+        util.load_config()
+        before = dict(util.APP_CONFIG)
+        path.write_text('[download]\ncount = 0\n', encoding='utf-8')
+        with pytest.raises(util.ConfigError):
+            util.load_config()
+        assert util.APP_CONFIG == before
+
+    def test_undecodable_file(self, data_dir, monkeypatch):
+        monkeypatch.setattr(util.locale, 'getpreferredencoding', lambda do_setlocale=True: 'ascii')
+        path = data_dir / 'config.ini'
+        path.write_bytes(b'[download]\ncount = \xff\n')
+        with pytest.raises(util.ConfigError, match='文件编码无法识别，请用 UTF-8 编码保存') as info:
+            util.load_config()
+        assert str(path) in str(info.value)
+
+    def test_debug_log_hides_proxy_password(self, data_dir, caplog):
+        caplog.set_level(logging.DEBUG, logger='bustag')
+        (data_dir / 'config.ini').write_text('[options]\nproxy = http://alice:s3cret@127.0.0.1:7890\n',
+                                             encoding='utf-8')
+        util.load_config()
+        log = '\n'.join(caplog.messages)
+        assert 'options.proxy = http://alice:***@127.0.0.1:7890' in log
+        assert 's3cret' not in log
+
+
+@pytest.mark.parametrize('url, shown', [
+    ('http://alice:s3cret@127.0.0.1:7890', 'http://alice:***@127.0.0.1:7890'),
+    ('socks5://u:p%40ss@proxy.local:1080', 'socks5://u:***@proxy.local:1080'),
+    ('http://user:p@ss@host:8080', 'http://user:***@host:8080'),
+    ('http://u:pw@host/path?q=1', 'http://u:***@host/path?q=1'),
+    ('alice:s3cret@127.0.0.1:7890', 'alice:***@127.0.0.1:7890'),
+    ('http://alice@127.0.0.1:7890', 'http://alice@127.0.0.1:7890'),
+    ('http://127.0.0.1:7890', 'http://127.0.0.1:7890'),
+    ('http://[::1', 'http://[::1'),
+    ('10800', '10800'),
+    ('', ''),
+])
+def test_redact_url(url, shown):
+    assert util.redact_url(url) == shown
+
 
 @pytest.mark.parametrize('root_path, dead', [
     ('https://www.busdmm.work', True),
@@ -177,19 +268,90 @@ def test_log_level(saved_log_level, monkeypatch, env, level):
     assert util.DEBUG == (level == logging.DEBUG)
 
 
+class TestStartupErrors:
+    @pytest.fixture
+    def waited(self, monkeypatch):
+        '''init() 不重新配置日志；记录 wait_for_enter_if_console 的调用'''
+        calls = []
+        monkeypatch.setattr(util, 'setup_logging', lambda: None)
+        monkeypatch.setattr(util, 'wait_for_enter_if_console', lambda: calls.append('wait'))
+        return calls
+
+    def test_bad_config_exits_after_one_error_line(self, data_dir, monkeypatch, caplog, waited):
+        path = data_dir / 'config.ini'
+        path.write_text('[download]\ninterval = 3h\n', encoding='utf-8')
+        monkeypatch.setenv('BUSTAG_DATA_DIR', str(data_dir))
+        with pytest.raises(SystemExit) as info:
+            util.init()
+        assert info.value.code == 1
+        assert waited == ['wait']
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors == [f'配置文件 {path} 有错：[download] interval = 3h 不是有效的秒数（需要 ≥ 60 的整数），'
+                          '请修改或删除后重启（删除后会重新生成默认配置）']
+
+    def test_data_dir_that_cannot_be_created(self, tmp_path, monkeypatch, caplog, waited):
+        blocker = tmp_path / 'occupied'
+        blocker.write_text('这是一个文件，不是目录', encoding='utf-8')
+        monkeypatch.setenv('BUSTAG_DATA_DIR', str(blocker))
+        with pytest.raises(SystemExit) as info:
+            util.init()
+        assert info.value.code == 1
+        assert waited == ['wait']
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert errors[0].startswith(f'无法创建数据目录 {blocker}：')
+
+    @pytest.mark.parametrize('frozen, tty, waits', [
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+    ])
+    def test_wait_for_enter_only_in_exe_console(self, monkeypatch, frozen, tty, waits):
+        prompts = []
+
+        class Stdin:
+            def isatty(self):
+                return tty
+
+        monkeypatch.setattr(sys, 'frozen', frozen, raising=False)
+        monkeypatch.setattr(sys, 'stdin', Stdin())
+        monkeypatch.setattr('builtins.input', prompts.append)
+        util.wait_for_enter_if_console()
+        assert bool(prompts) == waits
+
+
 class TestImportInit:
-    def run(self, cwd, data_dir=None):
-        code = ('import json\n'
-                'from bustag import util\n'
-                'print(json.dumps({"data": util.DATA_DIR, "root": util.APP_CONFIG["download.root_path"]}))\n')
+    def start(self, cwd, data_dir=None, code=None):
+        code = code or ('import json\n'
+                        'from bustag import util\n'
+                        'print(json.dumps({"data": util.DATA_DIR, "root": util.APP_CONFIG["download.root_path"]}))\n')
         env = {k: v for k, v in os.environ.items() if not k.startswith('BUSTAG_')}
         env.update(PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8')
         if data_dir is not None:
             env['BUSTAG_DATA_DIR'] = str(data_dir)
-        result = subprocess.run([sys.executable, '-c', code], cwd=str(cwd), env=env, capture_output=True,
-                                encoding='utf-8', errors='replace', timeout=120)
+        return subprocess.run([sys.executable, '-c', code], cwd=str(cwd), env=env, capture_output=True,
+                              encoding='utf-8', errors='replace', timeout=120)
+
+    def run(self, cwd, data_dir=None):
+        result = self.start(cwd, data_dir)
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout.strip().splitlines()[-1]), result.stderr
+
+    @pytest.mark.parametrize('text, reason', [
+        ('[download]\ncount = 1\ncount = 2\n', '第 3 行的 count 在 [download] 里重复出现'),
+        ('[download]\ninterval = 3h\n', '[download] interval = 3h 不是有效的秒数（需要 ≥ 60 的整数）'),
+    ])
+    def test_bad_config_stops_with_one_line(self, tmp_path, text, reason):
+        data = tmp_path / 'broken'
+        data.mkdir()
+        (data / 'config.ini').write_text(text, encoding='utf-8')
+        result = self.start(tmp_path, data, code='import bustag.main\n')
+        assert result.returncode == 1
+        assert 'Traceback' not in result.stderr
+        errors = [line for line in result.stderr.splitlines() if ' - ERROR - ' in line]
+        assert len(errors) == 1
+        assert errors[0].endswith(f'配置文件 {data / "config.ini"} 有错：{reason}，'
+                                  '请修改或删除后重启（删除后会重新生成默认配置）')
 
     def test_creates_data_folder_config_and_model_folder(self, tmp_path):
         data = tmp_path / 'custom'

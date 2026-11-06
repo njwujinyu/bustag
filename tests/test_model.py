@@ -138,7 +138,7 @@ class TestRecommend:
         assert correct >= 18
 
         caplog.clear()
-        assert classifier.recommend() is None
+        assert classifier.recommend() == (0, 0)
         assert '没有需要推荐的新影片' in caplog.messages
 
     def test_no_model_yet(self, movies):
@@ -148,17 +148,22 @@ class TestRecommend:
         with pytest.raises(FileNotFoundError):
             classifier.recommend()
 
-    @pytest.mark.parametrize('broken', ['model', 'binarizer'])
-    def test_unreadable_files_skip_recommendation(self, movies, data_dir, caplog, broken):
+    @pytest.mark.parametrize('broken, content', [
+        ('model', b'garbage'),
+        ('model', pickle.dumps((MultiLabelBinarizer(), SCORES))),
+        ('binarizer', b'garbage'),
+        ('binarizer', pickle.dumps(KNeighborsClassifier())),
+    ])
+    def test_unusable_files_stop_recommendation(self, movies, data_dir, broken, content):
         fanhaos = movies(3, like=True, rated=False)
         binarizer = MultiLabelBinarizer().fit([GENRES + STARS + ['g0', 's0']])
         dump_model(str(binarizer_file(data_dir)), binarizer)
         dump_model(str(model_file(data_dir)), {'model': KNeighborsClassifier(), 'scores': SCORES,
                                                'sklearn_version': sklearn.__version__})
         target = model_file(data_dir) if broken == 'model' else binarizer_file(data_dir)
-        target.write_bytes(b'garbage')
-        assert classifier.recommend() is None
-        assert any('无法推荐' in m and '重新训练' in m for m in warning_messages(caplog))
+        target.write_bytes(content)
+        with pytest.raises(ModelLoadError, match='重新训练'):
+            classifier.recommend()
         assert all(ItemRate.get_by_fanhao(f) is None for f in fanhaos)
 
 
@@ -190,6 +195,12 @@ class TestModelFile:
         (b'', '无法读取'),
         (pickle.dumps([1, 2, 3]), '格式不对'),
         (pickle.dumps({'model': 1}), '格式不对'),
+        (pickle.dumps({'model': KNeighborsClassifier()}), '格式不对'),
+        (pickle.dumps({'model': KNeighborsClassifier(), 'scores': {'f1': 0.5}}), '格式不对'),
+        (pickle.dumps({'model': KNeighborsClassifier(), 'scores': 'high'}), '格式不对'),
+        (pickle.dumps((MultiLabelBinarizer(), SCORES)), '格式不对'),
+        (pickle.dumps((KNeighborsClassifier(), {'precision': '0.5', 'recall': 0.5, 'f1': 0.5})), '格式不对'),
+        (pickle.dumps(MultiLabelBinarizer()), '格式不对'),
     ])
     def test_unreadable_model_file(self, data_dir, content, detail):
         model_file(data_dir).write_bytes(content)
