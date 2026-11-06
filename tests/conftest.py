@@ -201,21 +201,24 @@ class WSGIClient:
         body = urlencode(data or {}).encode('utf-8')
         return self.request('POST', path, body, 'application/x-www-form-urlencoded', headers)
 
-    def post_raw(self, path, body, content_type='application/x-www-form-urlencoded'):
-        return self.request('POST', path, body, content_type)
-
-    def post_multipart(self, path, fields=None, files=None):
+    def post_multipart(self, path, parts):
+        '''
+        parts 是 [(name, value)]，按表单里元素的先后排列（浏览器按这个顺序提交）。
+        value 是字符串时为普通字段，是 (文件名, 字节) 时为上传的文件
+        '''
         boundary = 'bustag-test-boundary'
         out = io.BytesIO()
-        for name, value in (fields or {}).items():
-            out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
-                      f'{value}\r\n'.encode('utf-8'))
-        for name, (filename, content) in (files or {}).items():
-            out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
-                      f'filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'
-                      .encode('utf-8'))
-            out.write(content)
-            out.write(b'\r\n')
+        for name, value in parts:
+            if isinstance(value, tuple):
+                filename, content = value
+                out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+                          f'filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+                          .encode('utf-8'))
+                out.write(content)
+                out.write(b'\r\n')
+            else:
+                out.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                          f'{value}\r\n'.encode('utf-8'))
         out.write(f'--{boundary}--\r\n'.encode('utf-8'))
         return self.request('POST', path, out.getvalue(),
                             f'multipart/form-data; boundary={boundary}')
