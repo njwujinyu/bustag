@@ -136,10 +136,61 @@ class TestRecommend:
         assert count == sum(r.rate_value for r in rates.values())
         correct = sum(rates[f].rate_value == 1 for f in likely) + sum(rates[f].rate_value == 0 for f in unlikely)
         assert correct >= 18
+        assert all(r.rete_time is not None for r in rates.values())
+        assert db.get_today_recommend_count() == count
+        assert f'推荐完成：预测 20 部，推荐 {count} 部' in caplog.messages
+        assert not [m for m in caplog.messages if m.startswith('跳过')]
 
         caplog.clear()
         assert classifier.recommend() == (0, 0)
         assert '没有需要推荐的新影片' in caplog.messages
+
+    def test_movies_tagged_during_recommendation_keep_the_user_tag(self, movies, monkeypatch, caplog):
+        movies(120, like=True)
+        movies(120, like=False)
+        new = movies(10, like=True, rated=False)
+        classifier.train()
+        real_prepare = classifier.prepare_predict_data
+
+        def user_tags_after_prepare():
+            ids, X = real_prepare()
+            ItemRate.saveit(RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE, new[3])
+            ItemRate.saveit(RATE_TYPE.USER_RATE, RATE_VALUE.LIKE, new[7])
+            return ids, X
+
+        monkeypatch.setattr(classifier, 'prepare_predict_data', user_tags_after_prepare)
+        caplog.clear()
+        total, count = classifier.recommend()
+        assert total == 10
+        assert [(r.rate_type, r.rate_value) for r in map(ItemRate.get_by_fanhao, (new[3], new[7]))] == [
+            (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE), (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE)]
+        system = ItemRate.select().where(ItemRate.rate_type == RATE_TYPE.SYSTEM_RATE)
+        assert sorted(r.item_id for r in system) == sorted(set(new) - {new[3], new[7]})
+        assert f'推荐完成：预测 10 部，推荐 {count} 部' in caplog.messages
+        assert '跳过 2 部（推荐期间已被打标）' in caplog.messages
+
+    def test_many_new_movies_are_written_in_batches(self, movies, monkeypatch):
+        movies(120, like=True)
+        movies(120, like=False)
+        new = movies(25, like=False, rated=False)
+        classifier.train()
+        monkeypatch.setattr(classifier, 'INSERT_BATCH', 10)
+        assert classifier.recommend()[0] == 25
+        assert sorted(r.item_id for r in ItemRate.select().where(ItemRate.rate_type == RATE_TYPE.SYSTEM_RATE)) == new
+
+    def test_unknown_tags_are_ignored_quietly(self, movies, make_item, caplog):
+        movies(120, like=True)
+        movies(120, like=False)
+        classifier.train()
+        make_item('NEW-001', tags=[('genre', 'g1'), ('genre', '新类别'), ('star', '新演员A'), ('star', '新演员B')])
+        caplog.set_level(logging.DEBUG, logger='bustag')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            ids, X = prepare.prepare_predict_data()
+        assert ids == ['NEW-001']
+        assert X.sum() == 1
+        assert [str(w.message) for w in caught if 'unknown class' in str(w.message)] == []
+        assert '本次有 3 个训练时没见过的标签，已忽略' in caplog.messages
 
     def test_no_model_yet(self, movies):
         movies(3, like=True, rated=False)

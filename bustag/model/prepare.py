@@ -1,13 +1,14 @@
 '''
 prepare data for model training
 '''
+import warnings
 from collections import Counter
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
 from bustag.spider.db import get_items, RATE_TYPE
 from bustag.model.persist import BINARIZER_PATH, dump_model, read_binarizer
-from bustag.util import get_data_path
+from bustag.util import get_data_path, logger
 
 
 def load_data():
@@ -109,5 +110,13 @@ def prepare_predict_data():
         rate_type=rate_type, rate_value=rate_value, page=page)
     mlb = read_binarizer(get_data_path(BINARIZER_PATH))
     rows = [as_dict(item) for item in unrated_items]
-    X = mlb.transform([row['tags'] for row in rows])
+    tag_sets = [row['tags'] for row in rows]
+    unknown = set().union(*tag_sets) - set(mlb.classes_)
+    if unknown:
+        logger.debug(f'本次有 {len(unknown)} 个训练时没见过的标签，已忽略')
+    with warnings.catch_warnings():
+        # 新影片总有训练时没见过的演员、系列，忽略它们正是想要的结果；
+        # scikit-learn 每次都会把这些标签名整串打成警告，看起来像出错
+        warnings.filterwarnings('ignore', message='unknown class', category=UserWarning)
+        X = mlb.transform(tag_sets)
     return [row['id'] for row in rows], X
