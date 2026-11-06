@@ -1,7 +1,9 @@
 import os
+import re
 import signal
 import sys
 from multiprocessing import freeze_support
+from urllib.parse import urlparse
 
 if __name__ == '__main__' and not getattr(sys, 'frozen', False):
     # python bustag/app/index.py：sys.path 里只有脚本所在目录，要把仓库根目录加进去才能导入 bustag
@@ -9,11 +11,12 @@ if __name__ == '__main__' and not getattr(sys, 'frozen', False):
 
 import bottle
 from bottle import route, template, static_file, request, redirect, hook, abort
+from requests.utils import requote_uri
 from waitress import create_server
 
 import bustag.model.classifier as clf
 from bustag import __version__
-from bustag.app.local import add_local_fanhao, load_tags_db
+from bustag.app.local import UPLOADED_DB, add_local_fanhao, load_tags_db
 from bustag.app.schedule import start_scheduler, add_download_job
 from bustag.spider import db
 from bustag.spider.covers import get_cover_file
@@ -26,6 +29,8 @@ DEFAULT_PORT = 8000
 # 封面请求在缓存未命中时要等下载，多留一些线程，避免页面请求排在封面后面
 SERVER_THREADS = 8
 COVER_CACHE_CONTROL = 'public, max-age=2592000'
+# page 参数的上限，再大的值传给 SQLite 会溢出
+MAX_PAGE = 1000000
 RESOURCE_DIR = get_resource_dir()
 STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
 bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
@@ -70,11 +75,40 @@ def _remove_extra_tags(item):
         tags_dict[t] = tags_dict[t][:limit]
 
 
+def _page_param():
+    '''page 参数：不是整数或小于 1 时按第 1 页处理'''
+    try:
+        page = int(request.query.get('page', 1))
+    except ValueError:
+        return 1
+    return min(max(page, 1), MAX_PAGE)
+
+
+def _like_param(default):
+    '''like 参数只认 0 和 1，其他取值（没有、空、None 等）用 default'''
+    value = request.query.get('like')
+    return int(value) if value in ('0', '1') else default
+
+
+def _submit_value():
+    '''表单按钮的值只接受 0 和 1'''
+    value = request.POST.submit
+    if value not in ('0', '1'):
+        abort(400, '提交的值只能是 0 或 1')
+    return int(value)
+
+
+def _form_anchor():
+    '''重定向后回到原来的表单位置，formid 只接受 form-数字'''
+    formid = request.POST.formid
+    return f'#{formid}' if re.fullmatch(r'form-\d{1,4}', formid) else ''
+
+
 @route('/')
 def index():
     rate_type = RATE_TYPE.SYSTEM_RATE.value
-    rate_value = int(request.query.get('like', RATE_VALUE.LIKE.value))
-    page = int(request.query.get('page', 1))
+    rate_value = _like_param(RATE_VALUE.LIKE.value)
+    page = _page_param()
     items, page_info = get_items(
         rate_type=rate_type, rate_value=rate_value, page=page)
     for item in items:
@@ -87,13 +121,9 @@ def index():
 
 @route('/tagit')
 def tagit():
-    rate_value = request.query.get('like', None)
-    rate_value = None if rate_value == 'None' else rate_value
-    rate_type = None
-    if rate_value:
-        rate_value = int(rate_value)
-        rate_type = RATE_TYPE.USER_RATE
-    page = int(request.query.get('page', 1))
+    rate_value = _like_param(None)
+    rate_type = None if rate_value is None else RATE_TYPE.USER_RATE
+    page = _page_param()
     items, page_info = get_items(
         rate_type=rate_type, rate_value=rate_value, page=page)
     for item in items:
@@ -103,47 +133,37 @@ def tagit():
 
 @route('/tag/<fanhao>', method='POST')
 def tag(fanhao):
-    if request.POST.submit:
-        formid = request.POST.formid
-        item_rate = ItemRate.get_by_fanhao(fanhao)
-        rate_value = request.POST.submit
-        if not item_rate:
-            rate_type = RATE_TYPE.USER_RATE
-            ItemRate.saveit(rate_type, rate_value, fanhao)
-            logger.debug(f'add new item_rate for fanhao:{fanhao}')
-        else:
-            item_rate.rate_value = rate_value
-            item_rate.save()
-            logger.debug(f'updated item_rate for fanhao:{fanhao}')
-    page = int(request.query.get('page', 1))
-    like = request.query.get('like')
-    url = f'/tagit?page={page}&like={like}'
-    if formid:
-        url += f'#{formid}'
-    redirect(url)
+    rate_value = _submit_value()
+    if Item.get_by_fanhao(fanhao) is None:
+        abort(404, '没有这个番号')
+    item_rate = ItemRate.get_by_fanhao(fanhao)
+    if not item_rate:
+        ItemRate.saveit(RATE_TYPE.USER_RATE, rate_value, fanhao)
+        logger.debug(f'add new item_rate for fanhao:{fanhao}')
+    else:
+        # 页面打开期间定时推荐可能已经给它打过系统评分，用户的打标要覆盖掉
+        item_rate.rate_type = RATE_TYPE.USER_RATE
+        item_rate.rate_value = rate_value
+        item_rate.save()
+        logger.debug(f'updated item_rate for fanhao:{fanhao}')
+    redirect(f'/tagit?page={_page_param()}&like={_like_param(None)}{_form_anchor()}')
 
 
 @route('/correct/<fanhao>', method='POST')
 def correct(fanhao):
-    if request.POST.submit:
-        formid = request.POST.formid
-        is_correct = int(request.POST.submit)
-        item_rate = ItemRate.get_by_fanhao(fanhao)
-        if item_rate:
-            item_rate.rate_type = RATE_TYPE.USER_RATE
-            if not is_correct:
-                rate_value = item_rate.rate_value
-                rate_value = 1 if rate_value == 0 else 0
-                item_rate.rate_value = rate_value
-            item_rate.save()
-            logger.debug(
-                f'updated item fanhao: {fanhao}, {"and correct the rate_value" if not is_correct else ""}')
-    page = int(request.query.get('page', 1))
-    like = int(request.query.get('like', 1))
-    url = f'/?page={page}&like={like}'
-    if formid:
-        url += f'#{formid}'
-    redirect(url)
+    is_correct = _submit_value()
+    item_rate = ItemRate.get_by_fanhao(fanhao)
+    if not item_rate:
+        abort(404, '没有这个番号的推荐记录')
+    item_rate.rate_type = RATE_TYPE.USER_RATE
+    if not is_correct:
+        rate_value = item_rate.rate_value
+        rate_value = 1 if rate_value == 0 else 0
+        item_rate.rate_value = rate_value
+    item_rate.save()
+    logger.debug(
+        f'updated item fanhao: {fanhao}, {"and correct the rate_value" if not is_correct else ""}')
+    redirect(f'/?page={_page_param()}&like={_like_param(RATE_VALUE.LIKE.value)}{_form_anchor()}')
 
 
 @route('/model')
@@ -170,22 +190,30 @@ def do_training():
 @route('/local_fanhao', method=['GET', 'POST'])
 def update_local_fanhao():
     msg = ''
+    errmsg = ''
     if request.POST.submit:
         fanhao_list = request.POST.fanhao
         tag_like = request.POST.tag_like == '1'
         missed_fanhao, local_file_count, tag_file_count = add_local_fanhao(
             fanhao_list, tag_like)
-        if len(missed_fanhao) > 0:
-            add_download_job(missed_fanhao)
-            msg = f'上传 {len(missed_fanhao)} 个番号, {local_file_count} 个本地文件'
-            if tag_like:
-                msg += f', {tag_file_count} 个打标为喜欢'
-    return template('local_fanhao', path=request.path, msg=msg)
+        add_download_job(missed_fanhao)
+        parts = []
+        if local_file_count:
+            parts.append(f'{local_file_count} 个本地文件')
+        if tag_like and tag_file_count:
+            parts.append(f'{tag_file_count} 个番号打标为喜欢')
+        if missed_fanhao:
+            parts.append(f'{len(missed_fanhao)} 个番号加入下载队列')
+        if parts:
+            msg = '已提交：' + '，'.join(parts)
+        else:
+            errmsg = '没有新增内容：没有识别到番号，或者这些番号都已经提交过'
+    return template('local_fanhao', path=request.path, msg=msg, errmsg=errmsg)
 
 
 @route('/local')
 def local():
-    page = int(request.query.get('page', 1))
+    page = _page_param()
     items, page_info = get_local_items(page=page)
     for local_item in items:
         LocalItem.loadit(local_item)
@@ -195,10 +223,17 @@ def local():
 
 @route('/local_play/<id:int>')
 def local_play(id):
-    local_item = LocalItem.update_play(id)
-    file_path = local_item.path
+    local_item = LocalItem.get_or_none(LocalItem.id == id)
+    if local_item is None:
+        abort(404, '没有这个本地文件')
+    file_path = local_item.path or ''
+    parsed = urlparse(file_path)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc or not file_path.isprintable():
+        abort(400, '只能播放 http / https 地址的文件')
+    LocalItem.update_play(id)
     logger.debug(file_path)
-    redirect(file_path)
+    # 地址里有中文或空格时，Location 头必须先做百分号编码
+    redirect(requote_uri(file_path))
 
 
 @route('/load_db', method=['GET', 'POST'])
@@ -209,13 +244,13 @@ def load_db():
         upload = request.files.get('dbfile')
         if upload:
             logger.debug(upload.filename)
-            name = get_data_path('uploaded.db')
+            name = get_data_path(UPLOADED_DB)
             upload.save(name, overwrite=True)
             logger.debug(f'uploaded file saved to {name}')
             try:
                 tag_file_added, missed_fanhaos = load_tags_db()
-            except DBError:
-                errmsg = '数据库文件错误, 请检查文件是否正确上传'
+            except DBError as ex:
+                errmsg = f'数据库文件错误：{ex}。请选择 bustag 的 bus.db 文件'
             else:
                 add_download_job(missed_fanhaos)
                 msg = f'上传 {tag_file_added} 条用户打标数据, {len(missed_fanhaos)} 个番号, '
