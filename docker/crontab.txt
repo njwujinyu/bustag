@@ -1,2 +1,0 @@
-*/30 * * * * /app/docker/run_download.sh >> /var/log/bustag.log 2>&1
-

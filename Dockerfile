@@ -1,55 +1,27 @@
-FROM python:3.7.4-slim as base
+# bustag 镜像。python:3.12-slim 自带 tzdata（TZ 才能生效），不需要再装系统包
+FROM python:3.12-slim
 
-# Create app directory
-WORKDIR /app
-
-# Install app dependencies
-COPY ./docker/sources.list .
-
-RUN mv /etc/apt/sources.list /etc/apt/sources.list.bak && mv ./sources.list /etc/apt/
-
-RUN apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install \
-    --no-install-recommends --yes \
-    build-essential libpq-dev cron git \
-    python3-dev --yes
-
-FROM base as build
-
-COPY requirements.txt .
-
-RUN mkdir /install
-
-RUN pip download --destination-directory /install -r /app/requirements.txt -i https://pypi.douban.com/simple
-
-FROM python:3.7.4-slim  as release
-
-COPY ./docker/sources.list .
-
-RUN mv /etc/apt/sources.list /etc/apt/sources.list.bak && mv ./sources.list /etc/apt/
-
-RUN apt-get update && apt-get -y install cron git
+ENV PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai
 
 WORKDIR /app
 
-COPY --from=build /install /install
-
+# 先装依赖再复制代码：只改代码时可以复用依赖层
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-index --find-links=/install -r requirements.txt
+COPY bustag ./bustag
 
-RUN mkdir /app/docker
+LABEL org.opencontainers.image.source="https://github.com/njwujinyu/bustag" \
+      org.opencontainers.image.description="bustag：给 JavBus 影片打标，训练模型并自动推荐（维护版）" \
+      org.opencontainers.image.licenses="MIT"
 
-COPY docker/entry.sh /app/docker/
-
-RUN touch /var/log/bustag.log
-
-RUN rm -rf /install &&  rm -rf /root/.cache/pip
-
-RUN chmod 755 /app/docker/*.sh
-
+# 数据库、配置文件、模型和封面缓存都在 /app/data
+VOLUME ["/app/data"]
 EXPOSE 8000
 
-LABEL maintainer="gxtrobot <gxtrobot@gmail.com>"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python", "-c", "import os, urllib.request as r; r.build_opener(r.ProxyHandler({})).open('http://127.0.0.1:' + (os.environ.get('BUSTAG_PORT') or '8000') + '/', timeout=4)"]
 
-CMD ["/app/docker/entry.sh"]
+# 定时抓取由程序自己调度，Python 作为 PID 1 直接处理 SIGTERM（docker stop）
+CMD ["python", "-m", "bustag.app.index"]

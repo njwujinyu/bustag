@@ -1,0 +1,13 @@
+services:
+  bustag:
+    image: ghcr.io/njwujinyu/bustag:latest
+    container_name: bustag
+    ports:
+      - "8000:8000"
+    volumes:
+      # 数据库、配置文件、模型和封面缓存都在这个目录，升级镜像不会丢
+      - ./data:/app/data
+    environment:
+      # 容器时区，决定"今日更新"按哪天算
+      TZ: Asia/Shanghai
+    restart: unless-stopped
