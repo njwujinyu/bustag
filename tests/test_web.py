@@ -898,9 +898,9 @@ class TestStartup:
         assert any('BUSTAG_PORT=abc' in m for m in caplog.messages)
 
     @pytest.fixture
-    def exe(self, monkeypatch, no_serve):
+    def exe(self, monkeypatch, no_serve, tmp_path):
         '''模拟打包后的 bustag.exe：返回带着命令行参数运行 index.main() 的函数'''
-        executable = r'C:\Tools\bustag\bustag.exe'
+        executable = str(tmp_path / 'bustag' / 'bustag.exe')
         monkeypatch.setattr(sys, 'frozen', True, raising=False)
         monkeypatch.setattr(sys, 'executable', executable)
 
