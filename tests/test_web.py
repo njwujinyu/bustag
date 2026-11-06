@@ -23,6 +23,7 @@ import bustag
 from bustag.app import index, schedule
 from bustag.app.local import add_local_fanhao
 from bustag.model import classifier
+from bustag.model.persist import BINARIZER_PATH, ModelLoadError, read_model_files
 from bustag.spider import covers, db
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate, LocalItem
 from bustag.spider.fetcher import FetchError
@@ -46,8 +47,10 @@ def redirect_target(response):
 
 
 def save_model(data_dir, scores=SCORES):
+    '''写一份能用的 model.pkl 和 label_binarizer.pkl'''
     (data_dir / classifier.MODEL_FILE).write_bytes(pickle.dumps(
         {'model': KNeighborsClassifier(), 'scores': scores, 'sklearn_version': sklearn.__version__}))
+    (data_dir / BINARIZER_PATH).write_bytes(pickle.dumps(MultiLabelBinarizer().fit([['g1', 's1']])))
 
 
 class TestImport:
@@ -456,6 +459,28 @@ class TestModelPage:
         (data_dir / classifier.MODEL_FILE).write_bytes(pickle.dumps((MultiLabelBinarizer(), SCORES)))
         text = wsgi.get('/model').text
         assert '模型文件 model.pkl 格式不对' in text
+        assert '准确率' not in text
+
+    @pytest.mark.parametrize('content, reason', [
+        (b'\x93\x1f\xa0\x07 not a pickle', '模型文件 label_binarizer.pkl 无法读取'),
+        (pickle.dumps(KNeighborsClassifier()), '模型文件 label_binarizer.pkl 格式不对'),
+    ], ids=['unreadable', 'not-a-binarizer'])
+    def test_unusable_binarizer_shows_the_same_reason_as_recommend_and_check(self, wsgi, data_dir, content, reason):
+        save_model(data_dir)
+        (data_dir / BINARIZER_PATH).write_bytes(content)
+        with pytest.raises(ModelLoadError, match=reason) as info:
+            read_model_files(str(data_dir / classifier.MODEL_FILE), str(data_dir / BINARIZER_PATH))
+        text = wsgi.get('/model').text
+        assert f'<p class="card-text text-danger">{bottle.html_escape(str(info.value))} </p>' in text
+        assert '重新训练' in text
+        assert '准确率' not in text
+        assert '还没有训练过模型' not in text
+
+    def test_missing_binarizer_means_no_usable_model(self, wsgi, data_dir):
+        save_model(data_dir)
+        (data_dir / BINARIZER_PATH).unlink()
+        text = wsgi.get('/model').text
+        assert '还没有训练过模型.' in text
         assert '准确率' not in text
 
     def test_training(self, wsgi, data_dir, make_item):

@@ -1,5 +1,5 @@
 '''
-模型文件的保存和读取。读取时检查内容，网页、推荐和 check 对同一个文件的判断一致
+模型文件的保存和读取。读取时检查内容；网页"模型"页、推荐和 check 都用 read_model_files 判断模型能不能用
 '''
 import numbers
 import os
@@ -90,3 +90,16 @@ def read_binarizer(path):
     if not callable(getattr(binarizer, 'transform', None)) or not hasattr(binarizer, 'classes_'):
         raise _format_error(path)
     return binarizer
+
+
+def read_model_files(model_path, binarizer_path):
+    '''
+    读取并检查训练生成的两个文件，推荐时两个都要用到；返回 model.pkl 的 (model, scores, 训练时的 scikit-learn 版本)
+
+    Raises:
+        FileNotFoundError: 还没有训练过模型（缺任何一个文件）
+        ModelLoadError: 任何一个文件读不了或者内容不对，消息是中文，可以直接显示给用户
+    '''
+    model, scores, version = read_classifier(model_path)
+    read_binarizer(binarizer_path)
+    return model, scores, version

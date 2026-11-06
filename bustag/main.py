@@ -9,8 +9,7 @@ import warnings
 import click
 import requests
 
-from bustag.model.persist import (BINARIZER_PATH, MODEL_FILE, ModelLoadError, read_binarizer,
-                                  read_classifier)
+from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, ModelLoadError, read_model_files
 from bustag.spider import bus_spider
 from bustag.spider.covers import cover_referer, cover_source_url, validate_image
 from bustag.spider.db import DB_FILE, Item, ItemRate, RATE_TYPE
@@ -132,13 +131,12 @@ def _check_site(results):
 
 
 def _check_model(results):
-    '''和网页、推荐用同样的检查读 model.pkl 和 label_binarizer.pkl'''
+    '''和网页"模型"页、推荐一样用 read_model_files 检查 model.pkl 和 label_binarizer.pkl'''
     model_file = os.path.normpath(get_data_path(MODEL_FILE))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         try:
-            read_classifier(model_file)
-            read_binarizer(os.path.normpath(get_data_path(BINARIZER_PATH)))
+            read_model_files(model_file, os.path.normpath(get_data_path(BINARIZER_PATH)))
         except FileNotFoundError:
             _report(results, WARN, '模型', '还没有训练模型', '打标 200 条以上后，在网页的"模型"页训练')
             return

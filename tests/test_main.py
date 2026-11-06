@@ -16,7 +16,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 
 from bustag import main, util
-from bustag.model import classifier, prepare
+from bustag.model import classifier
 from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, ModelLoadError
 from bustag.spider import bus_spider
 from bustag.spider.bus_spider import DownloadResult
@@ -257,7 +257,7 @@ class TestCheck:
         (None, pickle.dumps(KNeighborsClassifier())),
     ])
     def test_unusable_model_files_match_the_web_page(self, site, data_dir, model, binarizer):
-        '''⚠ 后面的文字就是网页"模型"页（读模型）或推荐（读标签编码器）报的原因'''
+        '''⚠ 后面的文字就是网页"模型"页和推荐（classifier.load）报的原因'''
         save_model_files(data_dir)
         if model is not None:
             model_path(data_dir).write_bytes(model)
@@ -265,7 +265,6 @@ class TestCheck:
             (data_dir / BINARIZER_PATH).write_bytes(binarizer)
         with pytest.raises(ModelLoadError) as info:
             classifier.load()
-            prepare.prepare_predict_data()
         result = invoke('check')
         assert f'{WARN} 模型：{info.value}' in result.output.splitlines()
         assert f'{OK} 模型' not in result.output

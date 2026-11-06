@@ -6,7 +6,7 @@ from peewee import chunked
 from sklearn.metrics import f1_score, recall_score, precision_score, confusion_matrix
 from sklearn.neighbors import KNeighborsClassifier
 from bustag.model.prepare import prepare_data, prepare_predict_data
-from bustag.model.persist import MODEL_FILE, dump_model, read_classifier
+from bustag.model.persist import BINARIZER_PATH, MODEL_FILE, dump_model, read_model_files
 from bustag.spider.db import RATE_TYPE, ItemRate, db
 from bustag.util import logger, get_data_path
 
@@ -17,13 +17,13 @@ INSERT_BATCH = 100
 
 def load():
     '''
-    读取保存的模型，返回 (model, scores)
+    读取保存的模型（模型和标签编码器两个文件都要能用），返回 (model, scores)
 
     Raises:
         FileNotFoundError: 还没有训练过模型
-        ModelLoadError: 模型文件读不了或者格式不对，需要重新训练
+        ModelLoadError: 模型文件或标签编码器读不了、格式不对，需要重新训练
     '''
-    model, scores, saved_version = read_classifier(get_data_path(MODEL_FILE))
+    model, scores, saved_version = read_model_files(get_data_path(MODEL_FILE), get_data_path(BINARIZER_PATH))
     if saved_version is None:
         logger.warning(f'模型文件是旧版本程序保存的，没有记录 scikit-learn 版本（当前是 {sklearn.__version__}），'
                        '建议到网页的"模型"页重新训练')

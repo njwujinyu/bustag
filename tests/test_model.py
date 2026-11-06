@@ -221,6 +221,27 @@ class TestRecommend:
 class TestModelFile:
     def save(self, data_dir, content):
         model_file(data_dir).write_bytes(pickle.dumps(content))
+        binarizer_file(data_dir).write_bytes(pickle.dumps(MultiLabelBinarizer().fit([GENRES + STARS])))
+
+    @pytest.mark.parametrize('content, detail', [
+        (b'not a pickle at all', '模型文件 label_binarizer.pkl 无法读取'),
+        (pickle.dumps(KNeighborsClassifier()), '模型文件 label_binarizer.pkl 格式不对'),
+        (pickle.dumps(MultiLabelBinarizer()), '模型文件 label_binarizer.pkl 格式不对'),
+    ], ids=['unreadable', 'not-a-binarizer', 'never-fitted'])
+    def test_binarizer_is_checked_too(self, data_dir, content, detail):
+        self.save(data_dir, {'model': KNeighborsClassifier(), 'scores': SCORES,
+                             'sklearn_version': sklearn.__version__})
+        binarizer_file(data_dir).write_bytes(content)
+        with pytest.raises(ModelLoadError, match=detail) as info:
+            classifier.load()
+        assert '重新训练' in str(info.value)
+
+    def test_missing_binarizer_means_no_model(self, data_dir):
+        self.save(data_dir, {'model': KNeighborsClassifier(), 'scores': SCORES,
+                             'sklearn_version': sklearn.__version__})
+        binarizer_file(data_dir).unlink()
+        with pytest.raises(FileNotFoundError):
+            classifier.load()
 
     def test_current_format_loads_quietly(self, data_dir, caplog):
         self.save(data_dir, {'model': KNeighborsClassifier(), 'scores': SCORES,
