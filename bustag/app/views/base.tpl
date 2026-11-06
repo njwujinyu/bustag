@@ -1,4 +1,3 @@
-<%print(path)%>
 <!doctype html>
 <html lang="en">
   <head>
