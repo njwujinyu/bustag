@@ -51,3 +51,6 @@ output/
 
 # notebooks
 notebooks/
+
+# runtime data (bus.db, config.ini, model/, covers/)
+data/
