@@ -10,6 +10,9 @@ from bs4 import BeautifulSoup
 
 Tag = namedtuple('Tag', ['type', 'value', 'link'])
 
+# 同番号的第二部影片：详情页路径在番号后面加发行日期（/GEBB-062_2026-10-31），页面上的識別碼和第一部相同
+DATED_SUFFIX = re.compile(r'_\d{4}-\d{2}-\d{2}$')
+
 # 详情页里"标题 + 一个链接"的字段，值是老库里的标签类型（带冒号）
 HEADER_TAG_TYPES = {'導演': '導演:', '製作商': '製作商:', '發行商': '發行商:', '系列': '系列:'}
 # 类别和演员按链接路径区分
@@ -141,9 +144,10 @@ def has_next_page(html):
 
 def fanhao_from_path(path):
     '''
-    详情页路径对应的番号。同番号的另一部影片路径带日期后缀（/GEBB-062_2026-10-31），去掉后缀
+    详情页路径对应的入库番号，就是路径里的编号（/IENF-465 → IENF-465）。
+    同番号的第二部影片路径带日期后缀（/GEBB-062_2026-10-31），后缀保留，两部分开入库
     '''
-    return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', path.strip('/'))
+    return path.strip('/')
 
 
 def is_valid_fanhao(text):

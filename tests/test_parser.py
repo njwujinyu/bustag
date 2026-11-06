@@ -220,7 +220,7 @@ class TestListPage:
 @pytest.mark.parametrize('path, fanhao', [
     ('/IENF-465', 'IENF-465'),
     ('IENF-465', 'IENF-465'),
-    ('/SORA-655_2026-10-31', 'SORA-655'),
+    ('/SORA-655_2026-10-31', 'SORA-655_2026-10-31'),
     ('/259LUXU-1908', '259LUXU-1908'),
     ('/ABC-123_2026', 'ABC-123_2026'),
 ])

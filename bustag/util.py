@@ -265,13 +265,6 @@ def format_datetime(dt):
     return dt.strftime(format)
 
 
-def to_localtime(utc_dt):
-    local_tz = datetime.timezone(datetime.timedelta(hours=8))
-    local_dt = utc_dt.replace(tzinfo=datetime.timezone.utc).astimezone(local_tz)
-    format = '%Y-%m-%d %H:%M:%S'
-    return local_dt.strftime(format)
-
-
 def check_model_folder():
     model_path = get_data_path(MODEL_PATH)
     if not os.path.exists(model_path):

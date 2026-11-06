@@ -9,9 +9,9 @@ import pytest
 
 from bustag import util
 from bustag.spider import bus_spider, db
-from bustag.spider.bus_spider import DownloadResult, download, download_fanhaos, get_url_by_fanhao
+from bustag.spider.bus_spider import DownloadResult, download, download_fanhaos
 from bustag.spider.fetcher import BlockedError, FetchError
-from bustag.spider.parser import fanhao_from_path
+from bustag.spider.parser import DATED_SUFFIX, fanhao_from_path
 
 BLOCKED = '被年龄验证页拦截（跳转到了 /doc/driver-verify）。'
 
@@ -39,8 +39,8 @@ def detail(page):
 @pytest.fixture
 def site(fake_fetcher, detail):
     '''
-    list_pages 依次是第 1、2… 页列表；其他详情页按路径里的番号生成，
-    没有给出的列表页返回 404
+    list_pages 依次是第 1、2… 页列表；其他详情页按路径里的番号生成（和真网站一样，
+    带日期后缀的那部页面上的識別碼不带后缀），没有给出的列表页返回 404
     '''
     def build(list_pages, routes=None):
         pages = {('/' if n == 1 else f'/page/{n}'): html for n, html in enumerate(list_pages, 1)}
@@ -48,7 +48,7 @@ def site(fake_fetcher, detail):
         def default(path):
             if path == '/' or path.startswith('/page/'):
                 return None
-            return detail(fanhao_from_path(path))
+            return detail(DATED_SUFFIX.sub('', fanhao_from_path(path)))
         return fake_fetcher({**pages, **(routes or {})}, default=default)
     return build
 
@@ -158,18 +158,42 @@ class TestBlockedAndErrors:
         assert saved_fanhaos() == ['A-004']
 
 
+def saved_movies():
+    return [(item.fanhao, item.url) for item in db.Item.select().order_by(db.Item.id)]
+
+
 class TestSkipAndSave:
-    def test_known_movies_and_their_dated_twins_are_skipped(self, site, known):
+    def test_known_movies_are_skipped(self, site, known):
         known('A-001')
-        fetcher = site([list_page(['A-001', 'A-001_2026-10-31', 'A-002'], has_next=False)])
+        fetcher = site([list_page(['A-001', 'A-002'], has_next=False)])
         result = download(count=10, max_page=10, fetcher=fetcher)
-        assert (result.added, result.skipped) == (1, 2)
+        assert (result.added, result.skipped) == (1, 1)
         assert fetcher.requests == ['/', '/A-002']
+
+    def test_both_movies_of_one_fanhao_are_saved(self, site):
+        lists = [list_page(['A-001_2026-10-31', 'A-001', 'A-002'], has_next=False)]
+        result = download(count=10, max_page=10, fetcher=site(lists))
+        assert (result.added, result.skipped) == (3, 0)
+        assert saved_movies() == [('A-001_2026-10-31', '/A-001_2026-10-31'), ('A-001', '/A-001'), ('A-002', '/A-002')]
+        fetcher = site(lists)
+        result = download(count=10, max_page=10, fetcher=fetcher)
+        assert (result.added, result.skipped) == (0, 3)
+        assert fetcher.requests == ['/']
+
+    def test_dated_movie_saved_under_the_plain_fanhao_is_skipped(self, site):
+        # 以前的版本把带日期后缀的那部存在不带后缀的番号下，url 是带后缀的路径
+        db.save({'fanhao': 'A-001', 'title': '作品 A-001', 'url': '/A-001_2026-10-31', 'release_date': '2026-10-31',
+                 'cover_img_url': '', 'length': '120'}, [])
+        fetcher = site([list_page(['A-001_2026-10-31', 'A-001'], has_next=False)])
+        result = download(count=10, max_page=10, fetcher=fetcher)
+        assert (result.added, result.skipped) == (0, 2)
+        assert fetcher.requests == ['/']
+        assert saved_movies() == [('A-001', '/A-001_2026-10-31')]
 
     def test_saved_movie_keeps_paths(self, site):
         fetcher = site([list_page(['B-001_2026-10-31'], has_next=False)])
         download(count=10, max_page=10, fetcher=fetcher)
-        item = db.Item.get_by_fanhao('B-001')
+        item = db.Item.get_by_fanhao('B-001_2026-10-31')
         assert item.url == '/B-001_2026-10-31'
         assert item.release_date.isoformat() == '2013-06-28'
         assert json.loads(item.meta_info) == {'cover_img_url': '/pics/cover/2qh5_b.jpg', 'length': '125'}
@@ -179,11 +203,12 @@ class TestSkipAndSave:
     def test_crawl_over_saved_list_pages(self, site, page):
         fetcher = site([page('list-home.html'), page('list-page-2.html')])
         result = download(count=30, max_page=5, fetcher=fetcher)
-        # 首页 28 个路径里有 4 部是同番号的两部影片，第二条按已有跳过
-        assert (result.pages, result.added, result.skipped) == (2, 30, 4)
+        # 首页 28 个路径（其中 5 个带日期后缀）各是一部影片，全部入库；第 2 页再新增 2 部
+        assert (result.pages, result.added, result.skipped) == (2, 30, 0)
         assert result.stop_reason == '已新增 30 部'
         assert db.Item.select().count() == 30
-        assert db.Item.get_by_fanhao('SORA-655').url == '/SORA-655_2026-10-31'
+        assert db.Item.get_by_fanhao('SORA-655').url == '/SORA-655'
+        assert db.Item.get_by_fanhao('SORA-655_2026-10-31').url == '/SORA-655_2026-10-31'
 
     def test_defaults_come_from_config(self, site, monkeypatch):
         monkeypatch.setitem(util.APP_CONFIG, 'download.count', '2')
@@ -192,9 +217,6 @@ class TestSkipAndSave:
         result = download(fetcher=fetcher)
         assert result.added == 2
         assert result.stop_reason == '已新增 2 部'
-
-    def test_url_by_fanhao(self):
-        assert get_url_by_fanhao('ABC-001') == 'https://www.javbus.com/ABC-001'
 
 
 class TestFetcherOwnership:
@@ -262,6 +284,20 @@ class TestDownloadFanhaos:
         assert result.blocked == BLOCKED
         assert result.stop_reason == '被拦截，停止抓取'
         assert fetcher.requests == ['/A-001', '/A-002']
+
+    def test_dated_fanhao(self, site):
+        fetcher = site([])
+        assert download_fanhaos(['A-001_2026-10-31'], fetcher=fetcher).added == 1
+        assert saved_movies() == [('A-001_2026-10-31', '/A-001_2026-10-31')]
+        assert download_fanhaos(['A-001_2026-10-31'], fetcher=fetcher).skipped == 1
+        assert fetcher.requests == ['/A-001_2026-10-31']
+
+    def test_dated_movie_saved_under_the_plain_fanhao_is_not_requested(self, site):
+        db.save({'fanhao': 'A-001', 'title': '作品 A-001', 'url': '/A-001_2026-10-31', 'release_date': '2026-10-31',
+                 'cover_img_url': '', 'length': '120'}, [])
+        fetcher = site([])
+        assert download_fanhaos(['A-001_2026-10-31'], fetcher=fetcher).skipped == 1
+        assert fetcher.requests == []
 
     def test_invalid_fanhaos_are_not_requested(self, site):
         fetcher = site([])

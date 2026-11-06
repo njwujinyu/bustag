@@ -43,7 +43,8 @@ def test_first_movie_detail_parses(pages):
     _, paths, detail = pages
     assert detail is not None, '首页没有影片链接'
     meta, tags = parser.parse_item(detail)
-    assert meta['fanhao'].upper() == parser.fanhao_from_path(paths[0]).upper()
+    # 带日期后缀的那部，页面上的識別碼不带后缀
+    assert meta['fanhao'].upper() == parser.DATED_SUFFIX.sub('', parser.fanhao_from_path(paths[0])).upper()
     assert meta['title']
     assert meta['cover_img_url']
     assert re.fullmatch(r'\d{4}-\d{2}-\d{2}', meta['release_date'] or ''), meta['release_date']

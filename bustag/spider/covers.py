@@ -3,12 +3,13 @@
 '''
 import json
 import os
-import re
 import tempfile
 import threading
+import time
 from urllib.parse import urljoin, urlparse
 
 from bustag.spider.fetcher import FetchError, create_fetcher
+from bustag.spider.parser import is_valid_fanhao
 from bustag.util import APP_CONFIG, get_data_path, is_dead_domain, logger
 
 COVERS_DIR = 'covers'
@@ -18,9 +19,20 @@ IMAGE_TYPES = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
 MIN_SIZE = 1024
 MAX_SIZE = 5 * 1024 * 1024
 MAX_DOWNLOADS = 2
+# 封面在网页请求里同步下载，图片站连不上时要尽快放弃：(连接, 读取) 超时，不重试
+COVER_TIMEOUT = (5, 15)
+# 等下载名额、等同一番号的另一个下载最多这么多秒，超时先回占位图
+QUEUE_TIMEOUT = 20
+# 下载失败的番号这么多秒内不再下载，直接回占位图
+FAILURE_TTL = 600
+# 失败记录超过这个数时顺手清掉过期的
+MAX_FAILURES = 1000
 
 _download_slots = threading.BoundedSemaphore(MAX_DOWNLOADS)
 _local = threading.local()
+_state_lock = threading.Lock()
+_failures = {}   # 缓存文件名 -> 下载失败的时刻（time.monotonic()）
+_inflight = {}   # 缓存文件名 -> 正在下载它的线程结束时 set 的 Event
 
 
 def normalize_cover_url(url):
@@ -72,7 +84,7 @@ def validate_image(data, content_type):
 
 def _cache_name(fanhao):
     name = (fanhao or '').strip().upper()
-    return name if re.fullmatch(r'[A-Z0-9-]+', name) else None
+    return name if is_valid_fanhao(name) else None
 
 
 def _covers_dir():
@@ -109,9 +121,29 @@ def _save(name, data, content_type):
 def _fetcher():
     fetcher = getattr(_local, 'fetcher', None)
     if fetcher is None:
-        fetcher = create_fetcher(delay=0, retries=1)
+        fetcher = create_fetcher(delay=0, retries=0, timeout=COVER_TIMEOUT)
         _local.fetcher = fetcher
     return fetcher
+
+
+def _recently_failed(name):
+    with _state_lock:
+        failed_at = _failures.get(name)
+        if failed_at is None:
+            return False
+        if time.monotonic() - failed_at < FAILURE_TTL:
+            return True
+        del _failures[name]
+        return False
+
+
+def _record_failure(name):
+    now = time.monotonic()
+    with _state_lock:
+        if len(_failures) >= MAX_FAILURES:
+            for key in [key for key, failed_at in _failures.items() if now - failed_at >= FAILURE_TTL]:
+                del _failures[key]
+        _failures[name] = now
 
 
 def _cover_img_url(fanhao):
@@ -124,21 +156,11 @@ def _cover_img_url(fanhao):
     return meta.get('cover_img_url')
 
 
-def get_cover_file(fanhao):
-    '''
-    返回 (缓存文件的绝对路径, mimetype)。番号不合法、库里没有、没有封面地址、
-    下载失败或不是有效图片时返回 None（原因写进日志）。缓存命中时不查库、不联网。
-    '''
-    name = _cache_name(fanhao)
-    if name is None:
+def _download(name, fanhao, source):
+    if not _download_slots.acquire(timeout=QUEUE_TIMEOUT):
+        logger.warning(f'封面下载排队超过 {QUEUE_TIMEOUT} 秒，这次先显示占位图：{fanhao}')
         return None
-    cached = _find_cached(name)
-    if cached:
-        return cached
-    source = cover_source_url(_cover_img_url(fanhao))
-    if not source:
-        return None
-    with _download_slots:
+    try:
         cached = _find_cached(name)
         if cached:
             return cached
@@ -146,9 +168,48 @@ def get_cover_file(fanhao):
             data, content_type = _fetcher().get_bytes(source, referer=cover_referer())
         except FetchError as ex:
             logger.warning(f'封面下载失败 {fanhao}（{source}）：{ex}')
+            _record_failure(name)
             return None
-    error = validate_image(data, content_type)
-    if error:
-        logger.warning(f'封面无效 {fanhao}（{source}）：{error}')
+        error = validate_image(data, content_type)
+        if error:
+            logger.warning(f'封面无效 {fanhao}（{source}）：{error}')
+            _record_failure(name)
+            return None
+        with _state_lock:
+            _failures.pop(name, None)
+        return _save(name, data, content_type)
+    finally:
+        _download_slots.release()
+
+
+def get_cover_file(fanhao):
+    '''
+    返回 (缓存文件的绝对路径, mimetype)。番号不合法、库里没有、没有封面地址、
+    下载失败或不是有效图片时返回 None（原因写进日志）。缓存命中时不查库、不联网。
+    下载失败的番号 FAILURE_TTL 秒内直接返回 None；同一番号同时只有一个线程下载，其他线程等它的结果。
+    '''
+    name = _cache_name(fanhao)
+    if name is None:
         return None
-    return _save(name, data, content_type)
+    cached = _find_cached(name)
+    if cached:
+        return cached
+    if _recently_failed(name):
+        return None
+    source = cover_source_url(_cover_img_url(fanhao))
+    if not source:
+        return None
+    with _state_lock:
+        done = _inflight.get(name)
+        downloading = done is None
+        if downloading:
+            done = _inflight[name] = threading.Event()
+    if not downloading:
+        done.wait(QUEUE_TIMEOUT)
+        return _find_cached(name)
+    try:
+        return _download(name, fanhao, source)
+    finally:
+        with _state_lock:
+            del _inflight[name]
+        done.set()

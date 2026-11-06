@@ -1,5 +1,5 @@
 '''
-数据目录、资源目录、配置文件、日志级别和时间换算；导入 bustag.util 时的初始化在子进程里验证
+数据目录、资源目录、配置文件和日志级别；导入 bustag.util 时的初始化在子进程里验证
 '''
 import json
 import logging
@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -219,14 +218,6 @@ def test_dead_domain_warning(root_path, dead):
     if dead:
         assert root_path in warning
         assert util.DEFAULT_ROOT_PATH in warning
-
-
-@pytest.mark.parametrize('utc, local', [
-    (datetime(2026, 11, 6, 16, 30), '2026-11-07 00:30:00'),
-    (datetime(2026, 1, 1, 0, 0, 5), '2026-01-01 08:00:05'),
-])
-def test_to_localtime_is_fixed_utc_plus_8(utc, local):
-    assert util.to_localtime(utc) == local
 
 
 def test_full_url_follows_root_path(monkeypatch):

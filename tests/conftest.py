@@ -281,7 +281,8 @@ def fake_fetcher():
 def cover_fetcher(monkeypatch):
     '''
     封面下载改走一个 FakeFetcher（routes 为空，测试里按完整地址添加），
-    并换掉按线程缓存 fetcher 的 threading.local。create_fetcher 收到的参数记在 created
+    并换掉按线程缓存 fetcher 的 threading.local、失败记录和下载中的番号表。
+    create_fetcher 收到的参数记在 created
     '''
     from bustag.spider import covers
 
@@ -294,4 +295,6 @@ def cover_fetcher(monkeypatch):
 
     monkeypatch.setattr(covers, 'create_fetcher', create_fetcher)
     monkeypatch.setattr(covers, '_local', threading.local())
+    monkeypatch.setattr(covers, '_failures', {})
+    monkeypatch.setattr(covers, '_inflight', {})
     return fake

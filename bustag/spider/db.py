@@ -73,11 +73,6 @@ class Item(BaseModel):
         item.add_date = format_datetime(item.add_date)
 
     @staticmethod
-    def getit(id):
-        item = Item.get_by_id(id)
-        return item
-
-    @staticmethod
     def get_by_fanhao(fanhao):
         item = Item.get_or_none(Item.fanhao == fanhao)
         return item
@@ -190,11 +185,6 @@ class ItemRate(BaseModel):
         item_rate.rete_time = get_now_time()
         item_rate.save()
         return 'updated'
-
-    @staticmethod
-    def getit(id):
-        item_rate = ItemRate.get_or_none(ItemRate.id == id)
-        return item_rate
 
     @staticmethod
     def get_by_fanhao(fanhao):

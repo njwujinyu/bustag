@@ -8,8 +8,9 @@ from typing import Optional
 
 from bustag.spider.db import Item, save
 from bustag.spider.fetcher import BlockedError, FetchError, create_fetcher
-from bustag.spider.parser import ParseError, fanhao_from_path, has_next_page, is_valid_fanhao, parse_item, parse_list
-from bustag.util import APP_CONFIG, get_full_url, logger
+from bustag.spider.parser import (DATED_SUFFIX, ParseError, fanhao_from_path, has_next_page, is_valid_fanhao,
+                                  parse_item, parse_list)
+from bustag.util import APP_CONFIG, logger
 
 EMPTY_PAGES_LIMIT = 3
 _lock = threading.Lock()
@@ -48,15 +49,16 @@ class DownloadResult:
         return text
 
 
-def get_url_by_fanhao(fanhao):
-    # return full url
-    url = get_full_url(fanhao)
-    return url
-
-
 def _fail(result, fanhao, reason):
     result.failed.append((fanhao, reason))
     logger.warning(f'{fanhao} 抓取失败：{reason}')
+
+
+def _in_library(fanhao, path):
+    '''
+    番号已经入库，或者这个详情页已经入库（以前的版本把带日期后缀的那部存在不带后缀的番号下）
+    '''
+    return Item.select().where((Item.fanhao == fanhao) | (Item.url == path)).exists()
 
 
 def _download_item(fetcher, result, path, fanhao):
@@ -71,6 +73,9 @@ def _download_item(fetcher, result, path, fanhao):
     except (FetchError, ParseError) as ex:
         _fail(result, fanhao, str(ex))
         return True
+    if DATED_SUFFIX.search(fanhao):
+        # 同番号的第二部影片，页面上的識別碼和第一部相同，用路径里带日期的编号入库
+        meta['fanhao'] = fanhao
     fanhao = meta['fanhao']
     title = meta['title']
     if meta['release_date'] is None:
@@ -117,7 +122,7 @@ def _download_pages(fetcher, result, count, max_page):
             if result.added >= count:
                 break
             fanhao = fanhao_from_path(path)
-            if Item.get_by_fanhao(fanhao):
+            if _in_library(fanhao, path):
                 result.skipped += 1
                 continue
             new_on_page += 1
@@ -194,7 +199,7 @@ def download_fanhaos(fanhaos, fetcher=None):
                 if not is_valid_fanhao(fanhao):
                     _fail(result, fanhao, '番号不合法')
                     continue
-                if Item.get_by_fanhao(fanhao):
+                if _in_library(fanhao, '/' + fanhao):
                     result.skipped += 1
                     continue
                 if not _download_item(fetcher, result, '/' + fanhao, fanhao):

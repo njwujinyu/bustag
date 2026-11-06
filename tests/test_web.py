@@ -22,7 +22,7 @@ import bustag
 from bustag.app import index, schedule
 from bustag.app.local import add_local_fanhao
 from bustag.model import classifier
-from bustag.spider import db
+from bustag.spider import covers, db
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate, LocalItem
 from bustag.spider.fetcher import FetchError
 
@@ -314,7 +314,9 @@ class TestCover:
         assert response.headers['cache-control'] == index.COVER_CACHE_CONTROL
         assert (data_dir / 'covers' / 'ABC-001.jpg').read_bytes() == JPEG
 
-    def test_failed_download_shows_placeholder_and_retries_later(self, wsgi, make_item, cover_fetcher):
+    def test_failed_download_shows_placeholder_and_retries_later(self, wsgi, make_item, cover_fetcher, monkeypatch):
+        now = [1000.0]
+        monkeypatch.setattr(covers, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
         make_item('ABC-001', cover='/pics/cover/abc_b.jpg')
         source = 'https://www.javbus.com/pics/cover/abc_b.jpg'
         cover_fetcher.routes[source] = FetchError('网络错误')
@@ -324,9 +326,21 @@ class TestCover:
         assert placeholder.headers['cache-control'] == 'no-store'
         assert b'<svg' in placeholder.body
 
+        # 失败后 10 分钟内不再下载，直接回占位图
         cover_fetcher.routes[source] = (JPEG, 'image/jpeg')
+        assert wsgi.get('/cover/ABC-001').headers['content-type'] == 'image/svg+xml'
+        assert cover_fetcher.requests == [source]
+        now[0] += covers.FAILURE_TTL
         assert wsgi.get('/cover/ABC-001').body == JPEG
         assert cover_fetcher.requests == [source, source]
+
+    def test_dated_fanhao(self, wsgi, data_dir, make_item, cover_fetcher):
+        make_item('GEBB-062_2026-10-31', cover='/pics/cover/gebb_b.jpg')
+        cover_fetcher.routes['https://www.javbus.com/pics/cover/gebb_b.jpg'] = (JPEG, 'image/jpeg')
+        assert 'src="/cover/GEBB-062_2026-10-31"' in wsgi.get('/tagit').text
+        response = wsgi.get('/cover/gebb-062_2026-10-31')
+        assert (response.status, response.body) == (200, JPEG)
+        assert (data_dir / 'covers' / 'GEBB-062_2026-10-31.jpg').read_bytes() == JPEG
 
 
 class TestLocalFiles:
