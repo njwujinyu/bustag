@@ -1,20 +1,24 @@
 PYTHON3=python3
 
+server:
+	$(PYTHON3) -m bustag.app.index
+
 javbus:
 	$(PYTHON3) -m bustag.main download
 
 recommend:
 	$(PYTHON3) -m bustag.main recommend
 
+check:
+	$(PYTHON3) -m bustag.main check
+
+test:
+	$(PYTHON3) -m pytest
+
 build:
-	docker build -t  bustag-app-dev .
-	
+	docker build -t bustag:dev .
+
 run:
-	docker run --rm -d -v `pwd`/data:/app/data -p 8080:8080 bustag-app-dev 
+	docker run --rm -d --name bustag -v "$(CURDIR)/data:/app/data" -p 8000:8000 bustag:dev
 
-server:
-	$(PYTHON3) bustag/app/index.py
-
-publish:
-	docker tag bustag-app-dev gxtrobot/bustag-app:latest
-	docker push gxtrobot/bustag-app:latest
+.PHONY: server javbus recommend check test build run
