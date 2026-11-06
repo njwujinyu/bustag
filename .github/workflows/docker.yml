@@ -183,7 +183,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 标签：分支名；默认分支另打 latest；v* 标签打版本号（v0.3.0 → 0.3.0、0.3，并自动打 latest）
+      # 标签：分支名；默认分支另打 latest；v* 标签打版本号（v0.3.1 → 0.3.1、0.3，并自动打 latest）
       - name: 生成标签
         id: meta
         uses: docker/metadata-action@v6

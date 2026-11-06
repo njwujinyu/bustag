@@ -81,7 +81,7 @@ docker run -d --name bustag --restart unless-stopped -p 8000:8000 -v "${PWD}/dat
 ```
 
 - `data` 目录保存数据库、配置、模型和封面缓存，**一定要挂载**，否则删除容器就丢数据。第一次启动会自动生成 `data/config.ini`。
-- 镜像标签：`latest`（默认分支 / 最新版本）、`0.3.0`、`0.3`（版本号）、`revive` 这样的分支名。
+- 镜像标签：`latest`（默认分支 / 最新版本）、`0.3.1`、`0.3`（版本号）、`revive` 这样的分支名。
 - 时区默认 `Asia/Shanghai`（"今日更新"按这个时区算），要改就设置环境变量 `TZ`。
 - 8000 被占用时改映射的主机端口，例如 `-p 8080:8000`，然后访问 `http://127.0.0.1:8080`。
 - 更新：`docker compose pull && docker compose up -d`。看日志：`docker logs -f bustag`。自检：`docker exec -it bustag python -m bustag.main check`。
@@ -260,6 +260,11 @@ data/
 
 ## 更新记录
 
+### 0.3.1
+
+- 修正打标签时 GitHub Release 没有附上 Windows zip 的问题：发布作业取回构建产物时，这个 zip 被当成归档自动解开，找不到要附上的文件，Release 没有创建。现在原样取回 zip，发布前先检查它是单层的、解压后顶层是 `bustag/`。
+- 程序功能与 0.3.0 相同。0.3.0 没有 Release 页面（Windows 版请下载 0.3.1），它的 Docker 镜像 `0.3.0` 仍然可以用。
+
 ### 0.3.0（维护版第一个版本）
 
 - 抓取：用 requests + BeautifulSoup 重写爬虫，替换已经无法运行的 aspider 和 requests-html；串行、限速、失败自动重试；识别年龄验证页和 Cloudflare 拦截并给出提示；默认地址改为 `https://www.javbus.com`，旧域名启动时提示；新增 `proxy`（http / https / socks5）、`delay`、`max_page` 配置；`count` 改为"新增影片数"。
@@ -307,6 +312,6 @@ GitHub Actions（`.github/workflows/`）：
 |---|---|---|
 | `ci.yml` | 推送到 `master` / `revive`、Pull Request、手动 | Ubuntu 上用 Python 3.11 – 3.14、Windows 上用 3.12 跑 pytest；Linux 上再用 gunicorn（`--threads 8`，检查用的是 gthread worker）启动一次做冒烟，测试失败时也照样冒烟 |
 | `docker.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 分别构建 amd64 和 arm64 镜像并启动容器冒烟（镜像里有 LICENSE、首页、静态文件、健康检查、时区、`docker stop` 耗时），通过后推送双架构镜像到 `ghcr.io/<用户>/bustag`（Pull Request 不推送） |
-| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟（首页和静态文件、`bustag.exe check`，再用合成的打标数据在 exe 里训练、重启后等首次定时任务推荐完），产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip |
+| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟（首页和静态文件、`bustag.exe check`，再用合成的打标数据在 exe 里训练、重启后等首次定时任务推荐完），产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip（附上之前检查它是单层的 zip、解压后顶层是 `bustag/`） |
 
-发布新版本：改 `bustag/__init__.py` 里的版本号并提交，然后 `git tag v0.3.0 && git push origin v0.3.0`（标签必须是 `v<版本号>`）。Release 里会有 exe 压缩包，ghcr.io 里会有对应版本号的镜像。
+发布新版本：改 `bustag/__init__.py` 里的版本号并提交，然后 `git tag v0.3.1 && git push origin v0.3.1`（标签必须是 `v<版本号>`）。Release 里会有 exe 压缩包，ghcr.io 里会有对应版本号的镜像。
