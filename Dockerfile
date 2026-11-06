@@ -10,6 +10,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# MIT 许可要求每份副本都附带版权和许可声明
+COPY LICENSE ./
 COPY bustag ./bustag
 
 LABEL org.opencontainers.image.source="https://github.com/njwujinyu/bustag" \

@@ -107,8 +107,19 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $ProgressPreference = 'SilentlyContinue'
+          # MIT 许可要求每份副本都附带版权和许可声明，放在 exe 旁边
+          Copy-Item LICENSE dist\bustag\LICENSE
           $zip = "bustag-$($env:VERSION)-windows-x64.zip"
           Compress-Archive -Path 'dist\bustag' -DestinationPath $zip
+          # 不同版本的 Compress-Archive 写出的路径分隔符不同，比较前统一成 /
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+          try {
+              $entries = $archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          } finally {
+              $archive.Dispose()
+          }
+          if ($entries -notcontains 'bustag/LICENSE') { throw "$zip 里没有 bustag/LICENSE" }
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           '{0}  {1:N1} MB' -f $zip, ((Get-Item $zip).Length / 1MB)
 

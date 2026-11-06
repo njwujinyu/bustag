@@ -45,9 +45,11 @@ jobs:
       - name: 运行测试（离线，真网站测试默认跳过）
         run: python -m pytest
 
-      # gunicorn 只在 Linux 上有：create_app() 是 gunicorn 的入口，只能开 1 个 worker（定时任务在进程内）
+      # gunicorn 只在 Linux 上有：create_app() 是 gunicorn 的入口，只能开 1 个 worker（定时任务在进程内）；
+      # --threads 8 时用 gthread worker，下载封面时别的请求照常处理，超时只看 worker 心跳。
+      # 前面的测试失败时也照样运行（作业结论仍然是失败），不丢掉 gunicorn 这条路的结果
       - name: gunicorn 冒烟
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         shell: bash
         env:
           BUSTAG_DATA_DIR: ${{ runner.temp }}/gunicorn-data
@@ -59,7 +61,7 @@ jobs:
           printf '[download]\nroot_path = http://127.0.0.1:9\n' > "$BUSTAG_DATA_DIR/config.ini"
 
           log="$RUNNER_TEMP/gunicorn.log"
-          gunicorn -w 1 "bustag.app.index:create_app()" --bind 127.0.0.1:8765 > "$log" 2>&1 &
+          gunicorn -w 1 --threads 8 "bustag.app.index:create_app()" --bind 127.0.0.1:8765 > "$log" 2>&1 &
           pid=$!
           cleanup() {
             kill "$pid" 2> /dev/null || true
@@ -94,3 +96,8 @@ jobs:
               exit 1
             fi
           done
+          if ! grep -q 'Using worker: gthread' "$log"; then
+            echo 'gunicorn 没有用 gthread worker'
+            exit 1
+          fi
+          echo 'worker：gthread'

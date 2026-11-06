@@ -1,4 +1,4 @@
-# 镜像里只复制 requirements.txt 和 bustag/，这里让构建上下文尽量小
+# 镜像里只复制 requirements.txt、LICENSE 和 bustag/，这里让构建上下文尽量小
 .git
 .github
 .agents

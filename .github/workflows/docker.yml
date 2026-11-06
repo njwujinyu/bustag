@@ -60,6 +60,14 @@ jobs:
           cache-from: type=gha,scope=bustag-${{ matrix.arch }}
           cache-to: type=gha,scope=bustag-${{ matrix.arch }},mode=max,ignore-error=true
 
+      - name: 镜像里带 LICENSE
+        env:
+          IMAGE: bustag:smoke-${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm --platform "$PLATFORM" "$IMAGE" test -f /app/LICENSE
+          echo '/app/LICENSE 存在'
+
       - name: 启动容器并冒烟
         env:
           IMAGE: bustag:smoke-${{ matrix.arch }}

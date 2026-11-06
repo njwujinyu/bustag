@@ -371,8 +371,9 @@ app = bottle.default_app()
 def create_app():
     '''
     清掉上次运行留下的上传临时文件，启动定时任务（只启动一次）并返回 WSGI 应用。
-    用 gunicorn 时只能开 1 个 worker（定时任务在进程内）：
-    gunicorn -w 1 "bustag.app.index:create_app()" --bind 0.0.0.0:8000
+    用 gunicorn 时只能开 1 个 worker（定时任务在进程内），请求用多个线程处理（gthread worker，
+    下载封面时别的请求不用排队，超时只看 worker 心跳）：
+    gunicorn -w 1 --threads 8 "bustag.app.index:create_app()" --bind 0.0.0.0:8000
     '''
     remove_stale_uploads()
     start_scheduler()
