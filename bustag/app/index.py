@@ -1,6 +1,7 @@
 import os
 import re
 import signal
+import socket
 import sys
 from multiprocessing import freeze_support
 from urllib.parse import urlparse
@@ -340,14 +341,43 @@ def _wait_for_enter():
         pass
 
 
+def _cannot_listen(host, port, ex):
+    return StartupError(f'无法监听 {host}:{port}（{ex}）。端口可能已被占用，'
+                        '可以设置环境变量 BUSTAG_PORT 换一个端口')
+
+
+def _ensure_port_free(host, port):
+    '''
+    Windows 上 SO_REUSEADDR 允许两个进程绑定同一个端口，waitress 默认就设了它：
+    第二个实例不会报错，请求会被两个实例随机分走。先用独占方式探测一下端口，被占用就报错。
+    其他系统上 waitress 自己绑定失败就会报错，不需要探测。
+    '''
+    exclusive = getattr(socket, 'SO_EXCLUSIVEADDRUSE', None)
+    if exclusive is None:
+        return
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+    except OSError as ex:
+        raise StartupError(f'BUSTAG_HOST={host} 不是有效的监听地址（{ex}）') from ex
+    for family, socktype, proto, _, address in infos:
+        probe = socket.socket(family, socktype, proto)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+            probe.bind(address)
+        except OSError as ex:
+            raise _cannot_listen(host, port, ex) from ex
+        finally:
+            probe.close()
+
+
 def _serve():
     host, port = _listen_address()
     logger.info(f'bustag v{__version__} 启动')
+    _ensure_port_free(host, port)
     try:
         server = create_server(app, host=host, port=port, threads=SERVER_THREADS)
     except OSError as ex:
-        raise StartupError(f'无法监听 {host}:{port}（{ex}）。端口可能已被占用，'
-                           '可以设置环境变量 BUSTAG_PORT 换一个端口') from ex
+        raise _cannot_listen(host, port, ex) from ex
     create_app()
     _exit_on_sigterm()
     logger.info(f'浏览器访问 http://{_display_host(host)}:{port}')
