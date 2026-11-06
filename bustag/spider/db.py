@@ -242,29 +242,6 @@ def save(meta_info, tags):
     return item
 
 
-def test_save():
-    item_url = 'https://www.cdnbus.bid/MADM-116'
-    item_title = 'test item'
-    item_fanhao = 'MADM-116'
-    item_release_date = date(2019, 7, 19)
-    item_meta_info = ''
-    item = Item(title=item_title, url=item_url, fanhao=item_fanhao,
-                release_date=item_release_date, meta_info=item_meta_info)
-    item.save()
-
-    tag1 = Tag.create(type_='genre', value='素人',
-                      url='https://www.cdnbus.bid/genre/s1')
-    tag2 = Tag.create(type_='star', value='樱田',
-                      url='https://www.cdnbus.bid/star/dbd')
-    tag3 = Tag.create(type_='genre', value='高清',
-                      url='https://www.cdnbus.bid/genre/x1')
-    ItemTag.create(item=item, tag=tag1)
-    ItemTag.create(item=item, tag=tag2)
-
-    ItemRate.saveit(RATE_TYPE.USER_RATE, RATE_VALUE.LIKE, item.fanhao)
-    LocalItem.saveit('MADM-116', '/Download/MADM-116.avi')
-
-
 def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
     '''
     get required items based on some conditions
