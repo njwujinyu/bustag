@@ -1,70 +1,146 @@
 '''
-html parser to extract data
+解析 JavBus 页面（BeautifulSoup + 内置 html.parser）
 '''
 import re
 from collections import namedtuple
-from requests_html import HTML
-from aspider.routeing import get_router
-router = get_router()
+from datetime import date
+from urllib.parse import urlparse
 
+from bs4 import BeautifulSoup
 
 Tag = namedtuple('Tag', ['type', 'value', 'link'])
 
+# 详情页里"标题 + 一个链接"的字段，值是老库里的标签类型（带冒号）
+HEADER_TAG_TYPES = {'導演': '導演:', '製作商': '製作商:', '發行商': '發行商:', '系列': '系列:'}
+# 类别和演员按链接路径区分
+LINK_TAG_TYPES = (('/genre/', 'genre'), ('/star/', 'star'))
 
-def parse_item(text):
+
+class ParseError(Exception):
+    '''
+    页面不是影片详情页（验证页、错误页或页面结构变了）
+    '''
+
+
+def _soup(html):
+    return BeautifulSoup(html, 'html.parser')
+
+
+def _path(href):
+    return urlparse(href).path
+
+
+def _field_value(p, header):
+    texts = (s.strip() for s in p.find_all(string=True)
+             if all(parent is not header for parent in s.parents))
+    return ' '.join(t for t in texts if t)
+
+
+def _parse_date(text):
+    match = re.search(r'\d{4}-\d{2}-\d{2}', text or '')
+    if not match:
+        return None
+    try:
+        return date.fromisoformat(match.group()).isoformat()
+    except ValueError:
+        return None
+
+
+def _unique(tags):
+    seen = set()
+    result = []
+    for tag in tags:
+        key = (tag.type, tag.value)
+        if key not in seen:
+            seen.add(key)
+            result.append(tag)
+    return result
+
+
+def parse_item(html):
     '''
     Args:
-        text : str - html text
+        html : str - 详情页 html
 
     Returns:
         tuple: (dict, list)
-        dict - meta data for this item
-        list - tags for this item
+        dict - fanhao, title, cover_img_url（页面原值）, release_date（ISO 字符串或 None）,
+               length（数字字符串或 None）
+        list - Tag 列表，link 只有路径
     '''
-    html = HTML(html=text)
-    title_css = 'body > div.container > h3'
-    title = html.find(title_css)[0].text
-    cover_img_css = 'body > div.container > div.row.movie > div.col-md-9.screencap > a'
-    cover_img_url = html.find(cover_img_css)[0].attrs['href']
-    tags_css = 'body > div.container > div.row.movie > div.col-md-3.info'
-    tags = html.find(tags_css)[0].find('p')
-    release_date = tags[1].text
-    length = tags[2].text
-    # meta data
-    meta = {}
-    meta['fanhao'], meta['title'] = title.split(maxsplit=1)
-    meta['cover_img_url'] = cover_img_url
-    meta['release_date'] = release_date.split()[1]
-    meta['length'] = re.search(r'\d+', length).group()
+    soup = _soup(html)
+    heading = soup.select_one('div.container > h3')
+    info = soup.select_one('div.info')
+    if heading is None or info is None:
+        raise ParseError('不是影片详情页：找不到标题或影片信息（可能是验证页，或页面结构变了）')
 
-    tag_list = []
-    for tag in tags[3:]:
-        tag_type = ''
-        tag_value = ''
-        tag_link = ''
-        links = tag.find('a')
-        spans = tag.find('span.header')
-        if spans and len(links) == 1:
-            tag_type = (spans[0].text)
-            tag_link = links[0].attrs['href']
-            tag_value = links[0].text
-            if tag_type != '' and tag_value != '':
-                tag_list.append(create_tag(tag_type, tag_value, tag_link))
+    fields = {}
+    tags = []
+    for p in info.find_all('p'):
+        header = p.find('span', class_='header')
+        if header is None:
+            continue
+        name = header.get_text(strip=True).rstrip(':：').strip()
+        if name in HEADER_TAG_TYPES:
+            link = p.find('a', href=True)
+            if link is not None and link.get_text(strip=True):
+                tags.append(Tag(HEADER_TAG_TYPES[name], link.get_text(strip=True),
+                                _path(link['href'])))
         else:
-            for link in links:
-                tag_link = link.attrs['href']
-                tag_value = link.text
-                if 'genre' in tag_link:
-                    tag_type = 'genre'
-                if 'star' in tag_link:
-                    tag_type = 'star'
-                if tag_type != '' and tag_value != '':
-                    tag_list.append(create_tag(tag_type, tag_value, tag_link))
+            fields[name] = _field_value(p, header)
+    for link in info.select('p span.genre a[href]'):
+        path = _path(link['href'])
+        value = link.get_text(strip=True)
+        for marker, tag_type in LINK_TAG_TYPES:
+            if marker in path and value:
+                tags.append(Tag(tag_type, value, path))
+                break
 
-    return meta, tag_list
+    title = heading.get_text(' ', strip=True)
+    fanhao = fields.get('識別碼') or (title.split(maxsplit=1)[0] if title else '')
+    if not fanhao:
+        raise ParseError('不是影片详情页：找不到番号')
+    if title.startswith(fanhao):
+        title = title[len(fanhao):].strip()
+
+    cover_img_url = ''
+    cover = soup.select_one('div.screencap a.bigImage')
+    if cover is not None:
+        cover_img_url = cover.get('href') or ''
+        if not cover_img_url and cover.img is not None:
+            cover_img_url = cover.img.get('src') or ''
+
+    length = re.search(r'\d+', fields.get('長度', ''))
+    meta = {
+        'fanhao': fanhao,
+        'title': title,
+        'cover_img_url': cover_img_url,
+        'release_date': _parse_date(fields.get('發行日期')),
+        'length': length.group() if length else None,
+    }
+    return meta, _unique(tags)
 
 
-def create_tag(tag_type, tag_value, tag_link):
-    tag_link = router.get_url_path(tag_link)
-    tag = Tag(tag_type, tag_value, tag_link)
-    return tag
+def parse_list(html):
+    '''
+    列表页里影片详情页的路径（如 /IENF-465），去重并保持顺序
+    '''
+    soup = _soup(html)
+    paths = []
+    for link in soup.select('a.movie-box[href]'):
+        path = _path(link['href'])
+        if re.fullmatch(r'/[^/]+', path) and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def has_next_page(html):
+    soup = _soup(html)
+    return soup.select_one('ul.pagination a#next') is not None
+
+
+def fanhao_from_path(path):
+    '''
+    详情页路径对应的番号。同番号的另一部影片路径带日期后缀（/GEBB-062_2026-10-31），去掉后缀
+    '''
+    return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', path.strip('/'))
