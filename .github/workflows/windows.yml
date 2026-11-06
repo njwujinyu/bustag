@@ -1,0 +1,143 @@
+name: Windows
+
+on:
+  push:
+    branches: [master, revive]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建 Windows 版
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      zip: ${{ steps.package.outputs.zip }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖和 PyInstaller
+        shell: pwsh
+        run: python -m pip install -r requirements.txt 'pyinstaller>=6,<7'
+
+      # 版本号取自 bustag/__init__.py；打 v* 标签时标签必须是 v<版本号>，否则 zip 的文件名会对不上标签
+      - name: 读取版本号
+        id: version
+        shell: pwsh
+        run: |
+          $version = python -c "import bustag; print(bustag.__version__)"
+          if ($LASTEXITCODE -ne 0 -or -not $version) { throw '读取 bustag.__version__ 失败' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "标签 $($env:GITHUB_REF_NAME) 和 bustag/__init__.py 里的版本 $version 不一致"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: PyInstaller 构建
+        shell: pwsh
+        run: pyinstaller --noconfirm bustag.spec
+
+      - name: 冒烟（启动 exe，检查首页和静态文件）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+          BUSTAG_PORT: '8765'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $data = $env:BUSTAG_DATA_DIR
+          $base = "http://127.0.0.1:$($env:BUSTAG_PORT)"
+          $logDir = Split-Path -Parent $data
+          $outLog = Join-Path $logDir 'bustag-exe.out.log'
+          $errLog = Join-Path $logDir 'bustag-exe.err.log'
+
+          # 抓取指向本机关闭的端口：冒烟只查本地页面，不访问 JavBus
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content -Path (Join-Path $data 'config.ini') -Encoding utf8 -Value @('[download]', 'root_path = http://127.0.0.1:9', '', '[options]', 'proxy = http://127.0.0.1:9')
+
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          try {
+              $ready = $false
+              while ($watch.Elapsed.TotalSeconds -lt 90) {
+                  if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                  try {
+                      if ((Invoke-WebRequest -Uri "$base/" -NoProxy -TimeoutSec 5).StatusCode -eq 200) { $ready = $true; break }
+                  } catch {
+                      Start-Sleep -Milliseconds 500
+                  }
+              }
+              if (-not $ready) { throw '90 秒内首页没有返回 200' }
+              '首页 200，启动用时 {0:N1} 秒' -f $watch.Elapsed.TotalSeconds
+              foreach ($path in '/model', '/static/css/bustag.css', '/static/images/nocover.svg') {
+                  $status = (Invoke-WebRequest -Uri "$base$path" -NoProxy -TimeoutSec 10).StatusCode
+                  "$path -> $status"
+                  if ($status -ne 200) { throw "$path 返回 $status" }
+              }
+          } finally {
+              if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              # exe 按系统 ANSI 代码页写日志
+              '--- bustag.exe 输出 ---'
+              Get-Content -Path $outLog, $errLog -Encoding ansi -ErrorAction SilentlyContinue
+          }
+
+      - name: 打包 zip
+        id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = "bustag-$($env:VERSION)-windows-x64.zip"
+          Compress-Archive -Path 'dist\bustag' -DestinationPath $zip
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          '{0}  {1:N1} MB' -f $zip, ((Get-Item $zip).Length / 1MB)
+
+      # archive: false 直接上传这个 zip，下载时不会再被套一层 zip；产物名就是文件名
+      - name: 上传产物
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.package.outputs.zip }}
+          archive: false
+          if-no-files-found: error
+
+  # 只有 v* 标签才发布；写权限只给这个作业
+  release:
+    name: 发布到 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.zip }}
+
+      - name: 创建 Release 并附上 zip
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ needs.build.outputs.zip }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
