@@ -328,6 +328,18 @@ class TestLocalFiles:
         assert covers_on(text) == ['ABC-001']
         assert f'href="/local_play/{local.id}"' in text
 
+    @pytest.mark.xfail(strict=True, reason='产品缺陷：本地文件页的总条数算上了还没抓到影片信息的番号，和列出的条数对不上')
+    def test_total_matches_listed_files(self, wsgi, make_item):
+        make_item('ABC-001')
+        LocalItem.saveit('ABC-001', 'http://media.local/ABC-001.mp4')
+        # 上传了本地地址、影片信息还没抓下来的番号（上传之后、抓取完成之前就是这样）
+        LocalItem.saveit('ABC-002', 'http://media.local/ABC-002.mp4')
+        text = wsgi.get('/local').text
+        listed = re.findall(r'href="/local_play/\d+"', text)
+        total = re.search(r'共\s+\d+页,(\d+)条', text)
+        assert listed and total
+        assert len(listed) == int(total.group(1))
+
     @pytest.mark.xfail(strict=True, reason='产品缺陷：本地文件页的标签写成了「观看次数观看」')
     def test_local_page_view_count_label(self, wsgi, make_item):
         make_item('ABC-001')
