@@ -270,7 +270,7 @@ def check_model_folder():
     model_path = get_data_path(MODEL_PATH)
     if not os.path.exists(model_path):
         os.makedirs(model_path, exist_ok=True)
-        logger.debug(f'created model folder: {model_path}')
+        logger.debug(f'已创建模型目录 {model_path}')
 
 
 def wait_for_enter_if_console():

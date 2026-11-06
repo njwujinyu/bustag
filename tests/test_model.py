@@ -7,6 +7,7 @@ import logging
 import os
 import pickle
 import random
+import re
 import sys
 import threading
 import types
@@ -102,6 +103,16 @@ class TestTrain:
         assert saved['sklearn_version'] == sklearn.__version__
         assert saved['scores'] == scores
         assert model_folder(data_dir) == ['label_binarizer.pkl', 'model.pkl']
+
+    def test_training_log_uses_the_names_on_the_model_page(self, movies, caplog):
+        movies(120, like=True)
+        movies(120, like=False)
+        caplog.set_level(logging.INFO, logger='bustag')
+        _, scores = classifier.train()
+        assert any(re.fullmatch(r'测试集 60 部：判为"喜欢"的对 \d+ 部、错 \d+ 部（TP / FP），'
+                                r'判为"不喜欢"的对 \d+ 部、错 \d+ 部（TN / FN）', m) for m in caplog.messages)
+        assert (f'准确率（precision）{scores["precision"]}，覆盖率（recall）{scores["recall"]}，'
+                f'综合评分（F1）{scores["f1"]}') in caplog.messages
 
     def test_failure_after_fitting_keeps_the_saved_pair(self, movies, make_item, data_dir, monkeypatch):
         movies(120, like=True)

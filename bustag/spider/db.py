@@ -58,9 +58,9 @@ class Item(BaseModel):
             with db.atomic():
                 item = Item.create(fanhao=item_fanhao, title=item_title, url=item_url,
                                    release_date=item_release_date, meta_info=item_meta)
-            logger.debug(f'save item:  {item}')
+            logger.debug(f'已保存影片 {item_fanhao} {item_title}')
         except IntegrityError:
-            logger.debug(f'Item exists: {item_fanhao}')
+            logger.debug(f'影片已在库里：{item_fanhao}')
             raise ExistError()
         else:
             return item
@@ -107,7 +107,7 @@ class Tag(BaseModel):
         tag, created = Tag.get_or_create(type_=tag_info.type, value=tag_info.value,
                                          defaults={'url': urlparse(tag_info.link).path})
         if created:
-            logger.debug(f'save tag:  {tag}')
+            logger.debug(f'已保存标签 {tag.type_} {tag.value}')
         return tag
 
 
@@ -125,9 +125,9 @@ class ItemTag(BaseModel):
     def saveit(item, tag):
         try:
             item_tag = ItemTag.create(item=item, tag=tag)
-            logger.debug(f'save tag_item: {item_tag}')
-        except Exception as ex:
-            logger.exception(ex)
+            logger.debug(f'影片 {item.fanhao} 加上标签 {tag.value}')
+        except Exception:
+            logger.exception(f'影片 {item.fanhao} 加标签 {tag.value} 失败')
         else:
             return item_tag
 
@@ -146,6 +146,13 @@ class RATE_VALUE(IntEnum):
     DISLIKE = 0
 
 
+def describe_rate(rate_type, rate_value):
+    '''评分在日志里的说法，例如"用户打标 喜欢"'''
+    kind = {RATE_TYPE.USER_RATE: '用户打标', RATE_TYPE.SYSTEM_RATE: '系统推荐'}.get(rate_type, f'类型 {rate_type}')
+    value = {RATE_VALUE.LIKE: '喜欢', RATE_VALUE.DISLIKE: '不喜欢'}.get(rate_value, f'值 {rate_value}')
+    return f'{kind} {value}'
+
+
 class ItemRate(BaseModel):
     rate_type = IntegerField()
     rate_value = IntegerField()
@@ -159,9 +166,9 @@ class ItemRate(BaseModel):
         try:
             item_rate = ItemRate.create(
                 item=fanhao, rate_type=rate_type, rate_value=rate_value)
-            logger.debug(f'save ItemRate: {item_rate}')
+            logger.debug(f'已保存评分 {fanhao}：{describe_rate(rate_type, rate_value)}')
         except IntegrityError:
-            logger.debug(f'ItemRate exists: {fanhao}')
+            logger.debug(f'{fanhao} 已经有评分，没有改动')
         else:
             return item_rate
 
@@ -226,9 +233,9 @@ class LocalItem(BaseModel):
         try:
             local_item = LocalItem.create(
                 item=fanhao, path=path)
-            logger.debug(f'save LocalItem: {fanhao}')
+            logger.debug(f'已登记本地文件 {fanhao}')
         except IntegrityError:
-            logger.debug(f'LocalItem exists: {fanhao}')
+            logger.debug(f'{fanhao} 已经登记过本地文件')
         else:
             return local_item
 
@@ -242,7 +249,7 @@ class LocalItem(BaseModel):
                           LocalItem.view_times: LocalItem.view_times+1})
                  .where(LocalItem.id == id)
                  .execute())
-        logger.debug(f'update LocalItem {id} : rows:{nrows}')
+        logger.debug(f'本地文件 {id} 观看次数加 1（更新了 {nrows} 行）')
         return LocalItem.get_by_id(id)
 
     @staticmethod
@@ -260,7 +267,7 @@ def save(meta_info, tags):
         try:
             item = Item.saveit(meta_info)
         except ExistError:
-            logger.debug(f'item exists: {item_title}')
+            logger.debug(f'影片已在库里，跳过：{item_title}')
             return None
         for tag_info in tags:
             tag = Tag.saveit(tag_info)

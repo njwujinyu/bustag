@@ -138,7 +138,7 @@ class Fetcher:
                 status = None
                 continue
             status = resp.status_code
-            logger.debug(f'GET {url} -> {status} ({resp.elapsed.total_seconds():.2f}s)')
+            logger.debug(f'请求 {url} 返回 HTTP {status}，用时 {resp.elapsed.total_seconds():.2f} 秒')
             blocked = blocked_reason(resp)
             if blocked:
                 raise BlockedError(blocked)

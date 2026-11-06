@@ -50,7 +50,7 @@ def add_local_fanhao(fanhao, tag_like):
         text, _, path = row.partition(',')
         matched = find_fanhao(text)
         if matched:
-            logger.debug(f'matched fanhao {matched}')
+            logger.debug(f'识别出番号 {matched}')
             items.append((matched, path.strip() or None))
     missed_fanhaos = []
     checked = set()
@@ -66,9 +66,8 @@ def add_local_fanhao(fanhao, tag_like):
                 checked.add(fanhao)
                 if not Item.get_by_fanhao(fanhao):
                     missed_fanhaos.append(fanhao)
-    logger.debug(f'missed_fanhaos:{missed_fanhaos}')
-    logger.debug(f'tag_file_added:{tag_file_added}')
-    logger.debug(f'local_file_added:{local_file_added}')
+    logger.debug(f'上传番号：新增本地文件 {local_file_added} 个，打标 {tag_file_added} 条，'
+                 f'要下载的番号 {missed_fanhaos}')
     return missed_fanhaos, local_file_added, tag_file_added
 
 

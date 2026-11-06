@@ -53,6 +53,8 @@ ERROR_REASONS = {
 }
 # 模型页只认最近这么多次训练的结果
 MAX_TRAINING_RESULTS = 10
+# ItemRate.save_user_rate 的返回值在日志里的说法
+SAVE_OUTCOMES = {'added': '新增', 'updated': '已更新', 'kept': '没有改动'}
 # 不会改数据的请求方式，跨站检查不管它们
 SAFE_METHODS = ('GET', 'HEAD', 'OPTIONS')
 CROSS_SITE_REASON = '这个请求来自别的网站，已拒绝。会修改数据的操作只能在 bustag 自己的页面上进行'
@@ -217,7 +219,7 @@ def tag(fanhao):
     # 打标页"喜欢 / 不喜欢"标签页上的按钮就是用来改自己的打标的，所以覆盖已有的用户打标；
     # 页面打开期间定时推荐可能已经给它打过系统评分，也一起覆盖
     outcome = ItemRate.save_user_rate(fanhao, rate_value, replace_user_rate=True)
-    logger.debug(f'打标 {fanhao}：{outcome}')
+    logger.debug(f'打标 {fanhao} 为{"喜欢" if rate_value else "不喜欢"}：{SAVE_OUTCOMES[outcome]}')
     redirect(f'/tagit?page={_page_param()}&like={_like_param(None)}{_form_anchor()}')
 
 
@@ -257,7 +259,7 @@ def other_settings():
     except FileNotFoundError:
         pass
     except ModelLoadError as ex:
-        logger.warning(ex)
+        logger.warning(f'模型不能用：{ex}')
         error_msg = str(ex)
     trained, training_error = _training_result()
     msg = '训练完成，下面是新模型的数据' if trained and training_error is None else ''
@@ -333,7 +335,7 @@ def local_play(id):
     if parsed.scheme not in ('http', 'https') or not parsed.netloc or not file_path.isprintable():
         _abort(400, '只能播放 http / https 地址的文件')
     LocalItem.update_play(id)
-    logger.debug(file_path)
+    logger.debug(f'播放本地文件 {file_path}')
     # 地址里有中文或空格时，Location 头必须先做百分号编码
     redirect(requote_uri(file_path))
 

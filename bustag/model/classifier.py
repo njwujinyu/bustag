@@ -72,18 +72,18 @@ def train():
 
 
 def evaluate(confusion_mtx, y_test, y_pred):
+    '''测试集上的评分（保留两位小数），叫法和模型页一致：准确率 = precision、覆盖率 = recall、综合评分 = F1'''
     tn, fp, fn, tp = confusion_mtx.ravel()
     precision = precision_score(y_test, y_pred, zero_division=0)
     recall = recall_score(y_test, y_pred, zero_division=0)
     f1 = f1_score(y_test, y_pred, zero_division=0)
-    logger.info(f'tp: {tp}, fp: {fp}')
-    logger.info(f'fn: {fn}, tn: {tn}')
-    logger.info(f'precision_score: {precision}')
-    logger.info(f'recall_score: {recall}')
-    logger.info(f'f1_score: {f1}')
     model_scores = dict(precision=precision, recall=recall, f1=f1)
     model_scores = {key: float('{:.2f}'.format(value))
                     for key, value in model_scores.items()}
+    logger.info(f'测试集 {tp + fp + fn + tn} 部：判为"喜欢"的对 {tp} 部、错 {fp} 部（TP / FP），'
+                f'判为"不喜欢"的对 {tn} 部、错 {fn} 部（TN / FN）')
+    logger.info(f'准确率（precision）{model_scores["precision"]}，覆盖率（recall）{model_scores["recall"]}，'
+                f'综合评分（F1）{model_scores["f1"]}')
     return model_scores
 
 
