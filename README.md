@@ -307,6 +307,6 @@ GitHub Actions（`.github/workflows/`）：
 |---|---|---|
 | `ci.yml` | 推送到 `master` / `revive`、Pull Request、手动 | Ubuntu 上用 Python 3.11 – 3.14、Windows 上用 3.12 跑 pytest；Linux 上再用 gunicorn（`--threads 8`，检查用的是 gthread worker）启动一次做冒烟，测试失败时也照样冒烟 |
 | `docker.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 分别构建 amd64 和 arm64 镜像并启动容器冒烟（镜像里有 LICENSE、首页、静态文件、健康检查、时区、`docker stop` 耗时），通过后推送双架构镜像到 `ghcr.io/<用户>/bustag`（Pull Request 不推送） |
-| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟（首页和静态文件、`bustag.exe check`），产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip |
+| `windows.yml` | 推送到 `master` / `revive`、`v*` 标签、Pull Request（到 `master`）、手动 | 用 PyInstaller 构建 exe 并冒烟（首页和静态文件、`bustag.exe check`，再用合成的打标数据在 exe 里训练、重启后等首次定时任务推荐完），产物 `bustag-<版本>-windows-x64.zip`（exe 旁边带 LICENSE）；`v*` 标签时创建 GitHub Release 并附上 zip |
 
 发布新版本：改 `bustag/__init__.py` 里的版本号并提交，然后 `git tag v0.3.0 && git push origin v0.3.0`（标签必须是 `v<版本号>`）。Release 里会有 exe 压缩包，ghcr.io 里会有对应版本号的镜像。

@@ -130,6 +130,88 @@ jobs:
           }
           if ((Get-Content -Path $outLog, $errLog -Raw -Encoding ansi) -match 'Traceback') { throw 'bustag.exe check 输出了异常栈' }
 
+      # 打包后的 exe 里训练和推荐要用到 scikit-learn，依赖升级后最容易在这里出问题。用 runner 的 Python 和源码在数据目录里
+      # 生成合成打标数据（只在这里生成，不进任何产物），在 exe 里点"开始训练"，再重启 exe 等首次定时任务推荐：
+      # 定时任务约 5 秒后开始抓取，端口关闭，约 20 秒后抓取失败，接着推荐。第一次运行也可能已经推荐完，
+      # 所以重启前再补一批未打标的影片，保证第二次运行的推荐一定要用刚训练的模型。
+      # exe 的日志按 ANSI 代码页写（runner 上中文是 ?），推荐完成看数据库：所有影片都有了评分
+      - name: 冒烟（exe 里训练和推荐）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+          BUSTAG_PORT: '8765'
+          PYTHONIOENCODING: utf-8
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $base = "http://127.0.0.1:$($env:BUSTAG_PORT)"
+          $logDir = Split-Path -Parent $env:BUSTAG_DATA_DIR
+          $logs = [Collections.Generic.List[string]]::new()
+
+          function Start-Bustag([string]$name) {
+              $outLog = Join-Path $logDir "bustag-$name.out.log"
+              $errLog = Join-Path $logDir "bustag-$name.err.log"
+              $logs.Add($outLog)
+              $logs.Add($errLog)
+              $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+              $watch = [Diagnostics.Stopwatch]::StartNew()
+              while ($watch.Elapsed.TotalSeconds -lt 90) {
+                  if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                  try {
+                      if ((Invoke-WebRequest -Uri "$base/" -NoProxy -TimeoutSec 5).StatusCode -eq 200) { return $proc }
+                  } catch {
+                      Start-Sleep -Milliseconds 500
+                  }
+              }
+              Stop-Process -Id $proc.Id -Force
+              throw '90 秒内首页没有返回 200'
+          }
+
+          try {
+              python .github/scripts/smoke_data.py seed --rated 240 --unrated 40
+              if ($LASTEXITCODE -ne 0) { throw '生成合成打标数据失败' }
+
+              $proc = Start-Bustag 'train'
+              try {
+                  # 模型页"开始训练"按钮提交的 POST，训练完跳回 /model?training=<编号>
+                  $page = Invoke-WebRequest -Uri "$base/do-training" -Method Post -NoProxy -TimeoutSec 120
+                  $landed = $page.BaseResponse.RequestMessage.RequestUri.PathAndQuery
+                  if ($landed -notmatch '^/model\?training=\d+$') { throw "训练后没有跳回模型页，而是 $landed" }
+                  if ($page.Content -notmatch '训练完成，下面是新模型的数据') { throw '模型页没有显示"训练完成"' }
+                  if ($page.Content -notmatch '综合评分\(越高越好\): ([\d.]+)') { throw '模型页没有显示模型的分数' }
+                  "训练完成，综合评分 $($Matches[1])"
+              } finally {
+                  if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              }
+
+              python .github/scripts/smoke_data.py seed --unrated 30
+              if ($LASTEXITCODE -ne 0) { throw '补充未打标的影片失败' }
+
+              $proc = Start-Bustag 'recommend'
+              try {
+                  $watch = [Diagnostics.Stopwatch]::StartNew()
+                  while ($true) {
+                      if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                      $unrated, $system = (python .github/scripts/smoke_data.py status) -split ' '
+                      if ($LASTEXITCODE -ne 0) { throw '读取数据库失败' }
+                      if ([int]$unrated -eq 0) { break }
+                      if ($watch.Elapsed.TotalSeconds -gt 150) { throw "150 秒内没有推荐完，还有 $unrated 部影片没有评分" }
+                      Start-Sleep -Seconds 2
+                  }
+                  '首次定时任务推荐完成：重启后 {0:N0} 秒，系统推荐 {1} 部' -f $watch.Elapsed.TotalSeconds, $system
+              } finally {
+                  if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              }
+              if ((Get-Content -Path $logs -Raw -Encoding ansi) -match 'Traceback') { throw 'bustag.exe 的日志里有异常栈' }
+          } finally {
+              '--- bustag.exe 输出 ---'
+              foreach ($log in $logs) {
+                  "# $(Split-Path -Leaf $log)"
+                  Get-Content -Path $log -Encoding ansi -ErrorAction SilentlyContinue
+              }
+          }
+
       - name: 打包 zip
         id: package
         shell: pwsh
