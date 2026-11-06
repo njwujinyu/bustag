@@ -1,10 +1,11 @@
 '''
 create classifier model and predict
 '''
+import sklearn
 from sklearn.metrics import f1_score, recall_score, accuracy_score, precision_score, confusion_matrix
 from sklearn.neighbors import KNeighborsClassifier
 from bustag.model.prepare import prepare_data, prepare_predict_data
-from bustag.model.persist import load_model, dump_model
+from bustag.model.persist import ModelLoadError, read_model, dump_model
 from bustag.spider.db import RATE_TYPE, ItemRate
 from bustag.util import logger, get_data_path, MODEL_PATH
 
@@ -13,8 +14,30 @@ MIN_TRAIN_NUM = 200
 
 
 def load():
-    model_data = load_model(get_data_path(MODEL_FILE))
-    return model_data
+    '''
+    读取保存的模型，返回 (model, scores)
+
+    Raises:
+        FileNotFoundError: 还没有训练过模型
+        ModelLoadError: 模型文件读不了（多半是 scikit-learn 版本升级过），需要重新训练
+    '''
+    data = read_model(get_data_path(MODEL_FILE))
+    try:
+        if isinstance(data, dict):
+            model, scores, saved_version = data['model'], data['scores'], data.get('sklearn_version')
+        else:
+            # 旧版本程序保存的 (model, scores)，没有记录 scikit-learn 版本
+            model, scores = data
+            saved_version = None
+    except (KeyError, TypeError, ValueError) as ex:
+        raise ModelLoadError('模型文件格式不对, 请到网页的"模型"页点击"开始训练"重新训练') from ex
+    if saved_version is None:
+        logger.warning(f'模型文件是旧版本程序保存的，没有记录 scikit-learn 版本（当前是 {sklearn.__version__}），'
+                       '建议到网页的"模型"页重新训练')
+    elif saved_version != sklearn.__version__:
+        logger.warning(f'模型是用 scikit-learn {saved_version} 训练的，当前是 {sklearn.__version__}，'
+                       '建议到网页的"模型"页重新训练')
+    return model, scores
 
 
 def create_model():
@@ -29,27 +52,28 @@ def predict(X_test):
 
 
 def train():
+    '''
+    Raises:
+        ValueError: 打标数据不够或者只有一种标签，消息是中文，可以直接显示给用户
+    '''
     model = create_model()
-    X_train, X_test, y_train, y_test = prepare_data()
-    total = len(X_test) + len(X_train)
-    if total < MIN_TRAIN_NUM:
-        raise ValueError(f'训练数据不足, 无法训练模型. 需要{MIN_TRAIN_NUM}, 当前{total}')
+    X_train, X_test, y_train, y_test = prepare_data(MIN_TRAIN_NUM)
     model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
-    confusion_mtx = confusion_matrix(y_test, y_pred)
+    confusion_mtx = confusion_matrix(y_test, y_pred, labels=[0, 1])
     scores = evaluate(confusion_mtx, y_test, y_pred)
-    models_data = (model, scores)
-    dump_model(get_data_path(MODEL_FILE), models_data)
-    logger.info('new model trained')
-    return models_data
+    dump_model(get_data_path(MODEL_FILE),
+               {'model': model, 'scores': scores, 'sklearn_version': sklearn.__version__})
+    logger.info('模型训练完成')
+    return model, scores
 
 
 def evaluate(confusion_mtx, y_test, y_pred):
     tn, fp, fn, tp = confusion_mtx.ravel()
     # accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred)
-    recall = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
     logger.info(f'tp: {tp}, fp: {fp}')
     logger.info(f'fn: {fn}, tn: {tn}')
     # logger.info(f'accuracy_score: {accuracy}')
@@ -65,15 +89,20 @@ def evaluate(confusion_mtx, y_test, y_pred):
 def recommend():
     '''
     use trained model to recommend items
+
+    还没有训练过模型时抛 FileNotFoundError；模型文件读不了时写一条警告日志并返回 None
     '''
-    ids, X = prepare_predict_data()
-    if len(X) == 0:
-        logger.warning(
-            f'no data for recommend')
+    try:
+        ids, X = prepare_predict_data()
+        if len(X) == 0:
+            logger.info('没有需要推荐的新影片')
+            return
+        total = len(ids)
+        y_pred = predict(X)
+    except ModelLoadError as ex:
+        logger.warning(f'无法推荐：{ex}')
         return
     count = 0
-    total = len(ids)
-    y_pred = predict(X)
     for id, y in zip(ids, y_pred):
         if y == 1:
             count += 1
@@ -83,6 +112,5 @@ def recommend():
         item_rate = ItemRate(rate_type=rate_type,
                              rate_value=rate_value, item_id=item_id)
         item_rate.save()
-    logger.warning(
-        f'predicted {total} items, recommended {count}')
+    logger.info(f'推荐完成：预测 {total} 部，推荐 {count} 部')
     return total, count

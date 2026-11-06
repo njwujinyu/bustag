@@ -1,16 +1,13 @@
 '''
 prepare data for model training
 '''
-import json
-import operator
-import pickle
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MultiLabelBinarizer
+from collections import Counter
+
 from sklearn.model_selection import train_test_split
-from bustag.spider.db import get_items, RATE_TYPE, ItemRate, Item, get_tags_for_items
-from bustag.model.persist import dump_model, load_model
-from bustag.util import logger, get_data_path, MODEL_PATH
+from sklearn.preprocessing import MultiLabelBinarizer
+from bustag.spider.db import get_items, RATE_TYPE
+from bustag.model.persist import dump_model, read_model
+from bustag.util import get_data_path, MODEL_PATH
 
 BINARIZER_PATH = MODEL_PATH + 'label_binarizer.pkl'
 
@@ -45,44 +42,74 @@ def as_dict(item):
     return d
 
 
-def process_data(df):
+def check_labels(y):
+    '''
+    "喜欢"和"不喜欢"都要有（每种至少 2 条），分层抽样才能让训练集和测试集里都有两种标签
+
+    Raises:
+        ValueError: 消息是中文，可以直接显示给用户
+    '''
+    counts = Counter(y)
+    if not counts:
+        raise ValueError('还没有打标数据, 无法训练模型')
+    if len(counts) == 1:
+        label = '喜欢' if 1 in counts else '不喜欢'
+        raise ValueError(f'打标数据里只有"{label}"一种标签, 无法训练模型. 请把"喜欢"和"不喜欢"都打一些')
+    if min(counts.values()) < 2:
+        raise ValueError('"喜欢"和"不喜欢"都至少需要 2 条打标数据, 才能训练模型')
+
+
+def process_data(rows):
     '''
     do all processing , like onehotencode tag string
-    '''
-    X = df[['tags']]
-    y = df[['target']]
 
+    Args:
+        rows: as_dict() 返回的字典列表
+    '''
     mlb = MultiLabelBinarizer()
-    X = mlb.fit_transform(X.tags.values)
+    X = mlb.fit_transform([row['tags'] for row in rows])
+    y = [row['target'] for row in rows]
     dump_model(get_data_path(BINARIZER_PATH), mlb)
     return X, y
 
 
 def split_data(X, y):
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42)
+        X, y, test_size=0.25, random_state=42, stratify=y)
     return (X_train, X_test, y_train, y_test)
 
 
-def prepare_data():
+def prepare_data(min_samples=0):
+    '''
+    Args:
+        min_samples: 打标数据少于这个数量时不训练
+
+    Raises:
+        ValueError: 打标数据不够，或者只有一种标签。消息是中文，可以直接显示给用户
+    '''
     items = load_data()
-    dicts = (as_dict(item) for item in items)
-    df = pd.DataFrame(dicts, columns=['id', 'title', 'fanhao', 'url', 'add_date', 'tags', 'cover_img_url',
-                                      'target'])
-    X, y = process_data(df)
+    total = len(items)
+    if total < min_samples:
+        raise ValueError(f'训练数据不足, 无法训练模型. 需要{min_samples}, 当前{total}')
+    rows = [as_dict(item) for item in items]
+    check_labels([row['target'] for row in rows])
+    X, y = process_data(rows)
     return split_data(X, y)
 
 
 def prepare_predict_data():
+    '''
+    Raises:
+        FileNotFoundError: 还没有训练过模型
+        ModelLoadError: 保存的二进制化器读不了，需要重新训练
+    '''
     # get not rated data
     rate_type = None
     rate_value = None
     page = None
     unrated_items, _ = get_items(
         rate_type=rate_type, rate_value=rate_value, page=page)
-    mlb = load_model(get_data_path(BINARIZER_PATH))
-    dicts = (as_dict(item) for item in unrated_items)
-    df = pd.DataFrame(dicts, columns=['id', 'tags'])
-    df.set_index('id', inplace=True)
-    X = mlb.transform(df.tags.values)
-    return df.index.values, X
+    mlb = read_model(get_data_path(BINARIZER_PATH))
+    rows = [as_dict(item) for item in unrated_items]
+    X = mlb.transform([row['tags'] for row in rows])
+    return [row['id'] for row in rows], X

@@ -18,6 +18,7 @@ import bustag.model.classifier as clf
 from bustag import __version__
 from bustag.app.local import UPLOADED_DB, add_local_fanhao, load_tags_db
 from bustag.app.schedule import start_scheduler, add_download_job
+from bustag.model.persist import ModelLoadError
 from bustag.spider import db
 from bustag.spider.covers import get_cover_file
 from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
@@ -170,11 +171,16 @@ def correct(fanhao):
 
 @route('/model')
 def other_settings():
+    error_msg = None
+    model_scores = None
     try:
         _, model_scores = clf.load()
     except FileNotFoundError:
-        model_scores = None
-    return template('model', path=request.path, model_scores=model_scores)
+        pass
+    except ModelLoadError as ex:
+        logger.warning(ex)
+        error_msg = str(ex)
+    return template('model', path=request.path, model_scores=model_scores, error_msg=error_msg)
 
 
 @route('/do-training')
@@ -184,8 +190,8 @@ def do_training():
     try:
         _, model_scores = clf.train()
     except ValueError as ex:
-        logger.exception(ex)
         error_msg = ' '.join(ex.args)
+        logger.warning(f'训练失败：{error_msg}')
     return template('model', path=request.path, model_scores=model_scores, error_msg=error_msg)
 
 

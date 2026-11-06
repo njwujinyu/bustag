@@ -31,7 +31,7 @@
             <li class="list-group-item">覆盖率: {{model_scores['recall']}}</li>
             <li class="list-group-item">综合评分(越高越好): {{model_scores['f1']}}</li>
         </ul>
-        % else:
+        % elif not (defined('error_msg') and error_msg):
         <div class="card-body">
            还没有训练过模型.
         </div>
