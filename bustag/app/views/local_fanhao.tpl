@@ -31,7 +31,7 @@
 		  </div>
 		<div class="text-center">
 		<button type="submit" name="submit" class="btn btn-primary mx-2" value="1">提交</button>
-		<button type="submit" name="submit" class="btn btn-danger" value="0">重置</button>
+		<button type="reset" class="btn btn-danger">重置</button>
 		</div>
 		</div>
 	</div>

@@ -70,15 +70,11 @@
 </div>
 
 {{!base}}
-<% from bustag import __version__ %>
 <footer class="my-3">
   <div class="container">
   <div class="col">
-    <p class="text-center">
-    <span class="badge badge-pill badge-info">version : {{__version__}}</span>
-  </p>
-  <p class="text-center">
-  Developed by 凤凰山@2019 <a href="https://github.com/gxtrobot/bustag" target="_blank">github</a>
+  <p class="text-center text-muted small">
+  bustag v{{version}} · 维护版 <a href="https://github.com/njwujinyu/bustag" target="_blank" rel="noreferrer noopener">https://github.com/njwujinyu/bustag</a> · 原作者 <a href="https://github.com/gxtrobot/bustag" target="_blank" rel="noreferrer noopener">gxtrobot</a>
   </p>
   </div>
 </div>

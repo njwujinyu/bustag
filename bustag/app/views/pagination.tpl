@@ -4,6 +4,9 @@
 % setdefault('like', '')
 <div class="row">
 	<div class="col-12 text-center">
+	% if total_items == 0:
+	<h6>暂无数据</h6>
+	% else:
 	<h6>
 	% if curr_page != 1:
 	<a href="?page=1&like={{like}}"> 第一页</a>
@@ -33,5 +36,6 @@
 	页
 	</form>
 	</div>
+	% end
 	</div>
 </div>

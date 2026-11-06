@@ -34,6 +34,8 @@ MAX_PAGE = 1000000
 RESOURCE_DIR = get_resource_dir()
 STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
 bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
+# 所有模板都能直接用 {{version}}（页脚显示版本号）
+bottle.BaseTemplate.defaults['version'] = __version__
 
 
 @hook('before_request')
