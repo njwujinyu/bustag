@@ -343,6 +343,67 @@ class TestCorrectForm:
         assert 'action="/correct/ABC-011?page=1&like=1"' in text
 
 
+CROSS_SITE = {'Sec-Fetch-Site': 'cross-site', 'Origin': 'https://evil.example'}
+
+
+class TestCrossSiteRequests:
+    '''别的网页里自动提交的表单（跨站 POST）返回 403、数据不变；bustag 自己的页面和非浏览器的请求照常'''
+
+    @pytest.mark.parametrize('headers, reason', [
+        (CROSS_SITE, index.CROSS_SITE_REASON),
+        ({'Sec-Fetch-Site': 'same-site', 'Origin': 'http://127.0.0.1:8080'}, index.CROSS_SITE_REASON),
+        ({'Origin': 'https://evil.example'}, index.ORIGIN_MISMATCH_REASON),
+        ({'Origin': 'http://127.0.0.1:8080'}, index.ORIGIN_MISMATCH_REASON),
+        ({'Origin': 'null'}, index.ORIGIN_MISMATCH_REASON),
+        ({'Origin': 'http://[::1'}, index.ORIGIN_MISMATCH_REASON),
+    ], ids=['cross-site', 'same-site', 'other-origin', 'other-port', 'null-origin', 'bad-origin'])
+    def test_tag_from_another_site_is_rejected(self, wsgi, make_item, caplog, headers, reason):
+        make_item('ABC-001')
+        response = wsgi.post('/tag/ABC-001', {'submit': '1'}, headers=headers)
+        assert response.status == 403
+        assert '<title>禁止访问</title>' in response.text
+        assert f'<p>{reason}</p>' in response.text
+        assert ItemRate.get_by_fanhao('ABC-001') is None
+        assert any(m.startswith('拒绝跨站请求 POST /tag/ABC-001（') for m in caplog.messages)
+
+    @pytest.mark.parametrize('headers', [
+        {'Sec-Fetch-Site': 'same-origin', 'Origin': 'http://127.0.0.1'},
+        {'Sec-Fetch-Site': 'none'},
+        {'Origin': 'http://127.0.0.1'},
+        {'Origin': 'HTTP://127.0.0.1'},
+        {'Host': '192.168.1.5:8000', 'Origin': 'http://192.168.1.5:8000'},
+        {},
+    ], ids=['same-origin', 'user-initiated', 'old-browser-same-origin', 'origin-case', 'host-with-port', 'no-headers'])
+    def test_tag_from_bustag_itself_or_a_script_works(self, wsgi, make_item, headers):
+        make_item('ABC-001')
+        response = wsgi.post('/tag/ABC-001', {'submit': '1'}, headers=headers)
+        assert response.status == 303
+        rate = ItemRate.get_by_fanhao('ABC-001')
+        assert (rate.rate_type, rate.rate_value) == (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE)
+
+    def test_every_form_is_protected(self, wsgi, make_item, monkeypatch):
+        make_item('ABC-001')
+        ItemRate.saveit(RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE, 'ABC-001')
+        trainings, jobs = [], []
+        monkeypatch.setattr(classifier, 'train', lambda: trainings.append('train'))
+        monkeypatch.setattr(index, 'add_download_job', jobs.append)
+        for path, data in [('/correct/ABC-001', {'submit': '0', 'formid': 'form-1'}),
+                           ('/do-training', {}),
+                           ('/local_fanhao', {'submit': '1', 'fanhao': 'ABC-001,http://nas/a.mp4\nNEW-001', 'tag_like': '1'})]:
+            assert wsgi.post(path, data, headers=CROSS_SITE).status == 403, path
+        upload = wsgi.post_multipart('/load_db', [('dbfile', ('bus.db', b'SQLite format 3\x00')), ('submit', '1')],
+                                     headers=CROSS_SITE)
+        assert upload.status == 403
+        rate = ItemRate.get_by_fanhao('ABC-001')
+        assert (rate.rate_type, rate.rate_value) == (RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE)
+        assert (trainings, jobs) == ([], [])
+        assert LocalItem.select().count() == 0
+
+    @pytest.mark.parametrize('path', ['/', '/tagit', '/model', '/local_fanhao', '/load_db', '/static/css/bustag.css'])
+    def test_pages_opened_from_another_site_still_work(self, wsgi, path):
+        assert wsgi.get(path, headers=CROSS_SITE).status == 200
+
+
 class TestCover:
     def test_cached_cover_needs_no_network(self, wsgi, data_dir, make_item, cover_fetcher):
         make_item('ABC-001')

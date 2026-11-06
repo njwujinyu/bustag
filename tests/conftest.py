@@ -202,7 +202,7 @@ class WSGIClient:
         body = urlencode(data or {}).encode('utf-8')
         return self.request('POST', path, body, 'application/x-www-form-urlencoded', headers)
 
-    def post_multipart(self, path, parts):
+    def post_multipart(self, path, parts, headers=None):
         '''
         parts 是 [(name, value)]，按表单里元素的先后排列（浏览器按这个顺序提交）。
         value 是字符串时为普通字段，是 (文件名, 字节) 时为上传的文件
@@ -222,7 +222,7 @@ class WSGIClient:
                           f'{value}\r\n'.encode('utf-8'))
         out.write(f'--{boundary}--\r\n'.encode('utf-8'))
         return self.request('POST', path, out.getvalue(),
-                            f'multipart/form-data; boundary={boundary}')
+                            f'multipart/form-data; boundary={boundary}', headers)
 
 
 @pytest.fixture

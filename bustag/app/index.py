@@ -52,6 +52,11 @@ ERROR_REASONS = {
 }
 # 模型页只认最近这么多次训练的结果
 MAX_TRAINING_RESULTS = 10
+# 不会改数据的请求方式，跨站检查不管它们
+SAFE_METHODS = ('GET', 'HEAD', 'OPTIONS')
+CROSS_SITE_REASON = '这个请求来自别的网站，已拒绝。会修改数据的操作只能在 bustag 自己的页面上进行'
+ORIGIN_MISMATCH_REASON = ('请求的来源（Origin）和访问地址（Host）不一致，已拒绝。会修改数据的操作只能在 bustag 自己的页面上进行；'
+                          '通过反向代理访问时，请让代理保留原来的 Host 头')
 RESOURCE_DIR = get_resource_dir()
 STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
 bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
@@ -72,6 +77,40 @@ class PageError(bottle.HTTPError):
 
 def _abort(status, reason):
     raise PageError(status, reason)
+
+
+def _origin_host(origin):
+    '''Origin 头里的"主机:端口"（小写）；格式不对或者是 null 时返回 None'''
+    try:
+        return urlparse(origin).netloc.lower() or None
+    except ValueError:
+        return None
+
+
+@hook('before_request')
+def _reject_cross_origin():
+    '''
+    程序没有登录，用户浏览别的网页时，那个网页可以用自动提交的表单让浏览器向这里发 POST（改打标、训练、导入数据）。
+    浏览器标明是跨站发出的这类请求一律 403：有 Sec-Fetch-Site 时只放行 same-origin 和 none（用户自己发起的）；
+    较老的浏览器不发它，就要求 Origin 里的主机:端口等于 Host 头；两个头都没有的不是浏览器发的（命令行工具等），放行。
+    规则和 Go 1.25 net/http 的 CrossOriginProtection 相同
+    '''
+    if request.method in SAFE_METHODS:
+        return
+    site = request.get_header('Sec-Fetch-Site')
+    origin = request.get_header('Origin')
+    if site:
+        if site in ('same-origin', 'none'):
+            return
+        reason = CROSS_SITE_REASON
+    elif not origin:
+        return
+    elif _origin_host(origin) == (request.get_header('Host') or '').lower():
+        return
+    else:
+        reason = ORIGIN_MISMATCH_REASON
+    logger.warning(f'拒绝跨站请求 {request.method} {request.path}（Sec-Fetch-Site: {site!r}，Origin: {origin!r}）')
+    _abort(403, reason)
 
 
 @hook('before_request')
