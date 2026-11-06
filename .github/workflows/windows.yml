@@ -235,7 +235,8 @@ jobs:
           "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           '{0}  {1:N1} MB' -f $zip, ((Get-Item $zip).Length / 1MB)
 
-      # archive: false 直接上传这个 zip，下载时不会再被套一层 zip；产物名就是文件名
+      # archive: false 直接上传这个 zip，在 Actions 页面下载时不会再被套一层 zip；产物名就是文件名。
+      # 用 download-artifact 取回时要加 skip-decompress，否则它会把这个 zip 当成归档自动解开
       - name: 上传产物
         uses: actions/upload-artifact@v7
         with:
@@ -253,14 +254,57 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 产物本身就是 zip：download-artifact 默认会把 zip 解开（只剩 bustag/ 目录），
+      # skip-decompress 让它原样保存构建 job 里检查过的那个文件
       - name: 下载产物
         uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.zip }}
+          path: release-assets
+          skip-decompress: true
+
+      # 发布前列出并检查要附上的文件：单层 zip，解压后顶层只有 bustag/，里面有 bustag.exe 和 LICENSE
+      - name: 检查要发布的文件
+        shell: pwsh
+        env:
+          ZIP: ${{ needs.build.outputs.zip }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath 'release-assets' -PathType Container)) { throw '没有 release-assets 目录：下载产物这一步没有取回任何文件' }
+          '--- release-assets ---'
+          Get-ChildItem -Path release-assets -Recurse -Force | ForEach-Object { '{0,12}  {1}' -f $_.Length, $_.FullName }
+          $expected = Join-Path 'release-assets' $env:ZIP
+          if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) {
+              $files = @(Get-ChildItem -Path release-assets -File)
+              if ($files.Count -ne 1) {
+                  throw "release-assets 里没有 $($env:ZIP)，下载产物这一步拿到的不是那个 zip（见上面的文件列表）"
+              }
+              # 产物只有一个文件；万一下载时没拿到原文件名，就是这一个
+              "::warning::下载到的文件名是 $($files[0].Name)，改名为 $($env:ZIP)"
+              Move-Item -LiteralPath $files[0].FullName -Destination $expected
+          }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          try {
+              $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $expected).Path)
+          } catch {
+              throw "$($env:ZIP) 不是有效的 zip：$($_.Exception.Message)"
+          }
+          try {
+              # 不同版本的 Compress-Archive 写出的路径分隔符不同，比较前统一成 /
+              $entries = @($archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' })
+          } finally {
+              $archive.Dispose()
+          }
+          $outside = @($entries | Where-Object { -not $_.StartsWith('bustag/') })
+          if ($outside.Count) { throw "$($env:ZIP) 解压后的顶层应该只有 bustag/，还有：$($outside[0..4] -join '，')" }
+          foreach ($name in 'bustag/bustag.exe', 'bustag/LICENSE') {
+              if ($entries -notcontains $name) { throw "$($env:ZIP) 里没有 $name" }
+          }
+          '{0}：{1} 个条目，{2:N1} MB，顶层是 bustag/，有 bustag.exe 和 LICENSE' -f $env:ZIP, $entries.Count, ((Get-Item -LiteralPath $expected).Length / 1MB)
 
       - name: 创建 Release 并附上 zip
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ needs.build.outputs.zip }}
+          files: release-assets/${{ needs.build.outputs.zip }}
           generate_release_notes: true
           fail_on_unmatched_files: true
