@@ -22,7 +22,7 @@
 <form id="form-{{i}}" action="/correct/{{item.fanhao}}?page={{curr_page}}&like={{like}}" method="post">
 	<div class="row py-3">
 		<div class="col-12 col-md-4">
-		<img class="img-fluid img-thumbnail coverimg" src={{item.cover_img_url}}>
+		<img class="img-fluid img-thumbnail coverimg" src="/cover/{{item.fanhao}}" loading="lazy" alt="{{item.fanhao}} 封面">
 		</div>
 
 			<div class="col-7 col-md-5">
@@ -30,7 +30,7 @@
 			<div class="small text-muted">发行日期: {{item.release_date}}</div>
 			<div class="small text-muted">添加日期: {{item.add_date}}</div>
 			<h6>{{item.fanhao}} </h6>
-			<a href="{{item.url}}" target="_blank"> {{item.title[:30]}} </a>
+			<a href="{{item.url}}" target="_blank" rel="noreferrer noopener"> {{item.title[:30]}} </a>
 			<div>
 			% for t in item.tags_dict['genre']:
 			<span class="badge badge-primary">{{t}}</span>

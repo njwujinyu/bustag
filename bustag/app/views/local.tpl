@@ -20,7 +20,7 @@
 %for local_item in items:
 	<div class="row py-3">
 		<div class="col-12 col-md-4">
-		<img class="img-fluid img-thumbnail coverimg" alt="点击放大" src={{local_item.item.cover_img_url}}>
+		<img class="img-fluid img-thumbnail coverimg" src="/cover/{{local_item.item.fanhao}}" loading="lazy" alt="{{local_item.item.fanhao}} 封面">
 		</div>
 
 			<div class="col-7 col-md-5">
@@ -28,7 +28,7 @@
 			<div class="small text-muted">上次观看: {{local_item.last_view_date}}</div>
 			<div class="small text-muted">观看次数观看: {{local_item.view_times}}</div>
 			<h6>{{local_item.item.fanhao}} </h6>
-			<a href="{{local_item.item.url}}" target="_blank"> {{local_item.item.title[:30]}} </a>
+			<a href="{{local_item.item.url}}" target="_blank" rel="noreferrer noopener"> {{local_item.item.title[:30]}} </a>
 			<div>
 			% for t in local_item.item.tags_dict['genre']:
 			<span class="badge badge-primary">{{t}}</span>

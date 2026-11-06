@@ -8,7 +8,7 @@ if __name__ == '__main__' and not getattr(sys, 'frozen', False):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import bottle
-from bottle import route, template, static_file, request, redirect, hook
+from bottle import route, template, static_file, request, redirect, hook, abort
 from waitress import create_server
 
 import bustag.model.classifier as clf
@@ -16,14 +16,16 @@ from bustag import __version__
 from bustag.app.local import add_local_fanhao, load_tags_db
 from bustag.app.schedule import start_scheduler, add_download_job
 from bustag.spider import db
+from bustag.spider.covers import get_cover_file
 from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
-                              LocalItem, DBError, db as dbconn)
+                              Item, LocalItem, DBError, db as dbconn)
 from bustag.util import logger, get_data_path, get_resource_dir
 
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 8000
 # 封面请求在缓存未命中时要等下载，多留一些线程，避免页面请求排在封面后面
 SERVER_THREADS = 8
+COVER_CACHE_CONTROL = 'public, max-age=2592000'
 RESOURCE_DIR = get_resource_dir()
 STATIC_DIR = os.path.join(RESOURCE_DIR, 'static')
 bottle.TEMPLATE_PATH.insert(0, os.path.join(RESOURCE_DIR, 'views'))
@@ -43,6 +45,21 @@ def _close_db():
 @route('/static/<filepath:path>')
 def send_static(filepath):
     return static_file(filepath, root=STATIC_DIR)
+
+
+@route('/cover/<fanhao>')
+def cover(fanhao):
+    fanhao = fanhao.upper()
+    if Item.get_by_fanhao(fanhao) is None:
+        abort(404, '没有这个番号')
+    cover_file = get_cover_file(fanhao)
+    if cover_file is None:
+        # 下载失败时返回占位图，不让浏览器缓存，下次刷新页面再重试
+        return static_file('images/nocover.svg', root=STATIC_DIR, mimetype='image/svg+xml',
+                           headers={'Cache-Control': 'no-store'})
+    path, mimetype = cover_file
+    return static_file(os.path.basename(path), root=os.path.dirname(path), mimetype=mimetype,
+                       headers={'Cache-Control': COVER_CACHE_CONTROL})
 
 
 def _remove_extra_tags(item):
