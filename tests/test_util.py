@@ -95,6 +95,17 @@ class TestConfig:
         util.load_config()
         assert util.APP_CONFIG['options.proxy'] == 'http://127.0.0.1:7890'
 
+    @pytest.mark.parametrize('system_encoding, file_encoding', [
+        ('utf-8', 'gbk'),
+        ('gbk', 'utf-16'),
+        ('utf-8', 'utf-16'),
+    ], ids=['gbk-file-on-utf8-system', 'utf16-file-on-gbk-system', 'utf16-file-on-utf8-system'])
+    def test_file_in_neither_utf8_nor_system_encoding(self, data_dir, monkeypatch, system_encoding, file_encoding):
+        monkeypatch.setattr(util.locale, 'getpreferredencoding', lambda do_setlocale=True: system_encoding)
+        (data_dir / 'config.ini').write_bytes('[download]\n# 每次抓取的数量\ncount = 7\n'.encode(file_encoding))
+        with pytest.raises(util.ConfigError, match='文件编码无法识别'):
+            util.load_config()
+
     def test_empty_root_path_uses_default(self, data_dir):
         (data_dir / 'config.ini').write_text('[download]\nroot_path =\n', encoding='utf-8')
         util.load_config()
