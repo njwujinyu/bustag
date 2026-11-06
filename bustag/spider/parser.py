@@ -144,3 +144,11 @@ def fanhao_from_path(path):
     详情页路径对应的番号。同番号的另一部影片路径带日期后缀（/GEBB-062_2026-10-31），去掉后缀
     '''
     return re.sub(r'_\d{4}-\d{2}-\d{2}$', '', path.strip('/'))
+
+
+def is_valid_fanhao(text):
+    '''
+    番号只能由字母、数字、横线、下划线组成，以字母或数字开头，最长 64 个字符：
+    番号会拼进详情页网址和封面缓存的文件名，导入的、用户提交的番号都要先过这一关
+    '''
+    return isinstance(text, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', text) is not None

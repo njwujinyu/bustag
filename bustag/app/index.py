@@ -17,14 +17,14 @@ from waitress import create_server
 
 import bustag.model.classifier as clf
 from bustag import __version__
-from bustag.app.local import UPLOADED_DB, add_local_fanhao, load_tags_db
+from bustag.app.local import add_local_fanhao, load_tags_db, remove_stale_uploads, save_upload
 from bustag.app.schedule import start_scheduler, add_download_job
 from bustag.model.persist import ModelLoadError
 from bustag.spider import db
 from bustag.spider.covers import get_cover_file
-from bustag.spider.db import (get_items, get_local_items, RATE_TYPE, RATE_VALUE, ItemRate,
-                              Item, LocalItem, DBError, db as dbconn)
-from bustag.util import logger, get_data_path, get_resource_dir, wait_for_enter_if_console
+from bustag.spider.db import (get_items, get_local_items, count_local_items_without_item, RATE_TYPE,
+                              RATE_VALUE, ItemRate, Item, LocalItem, DBError, db as dbconn)
+from bustag.util import logger, get_resource_dir, wait_for_enter_if_console
 
 DEFAULT_HOST = '0.0.0.0'
 DEFAULT_PORT = 8000
@@ -140,16 +140,10 @@ def tag(fanhao):
     rate_value = _submit_value()
     if Item.get_by_fanhao(fanhao) is None:
         abort(404, '没有这个番号')
-    item_rate = ItemRate.get_by_fanhao(fanhao)
-    if not item_rate:
-        ItemRate.saveit(RATE_TYPE.USER_RATE, rate_value, fanhao)
-        logger.debug(f'add new item_rate for fanhao:{fanhao}')
-    else:
-        # 页面打开期间定时推荐可能已经给它打过系统评分，用户的打标要覆盖掉
-        item_rate.rate_type = RATE_TYPE.USER_RATE
-        item_rate.rate_value = rate_value
-        item_rate.save()
-        logger.debug(f'updated item_rate for fanhao:{fanhao}')
+    # 打标页"喜欢 / 不喜欢"标签页上的按钮就是用来改自己的打标的，所以覆盖已有的用户打标；
+    # 页面打开期间定时推荐可能已经给它打过系统评分，也一起覆盖
+    outcome = ItemRate.save_user_rate(fanhao, rate_value, replace_user_rate=True)
+    logger.debug(f'打标 {fanhao}：{outcome}')
     redirect(f'/tagit?page={_page_param()}&like={_like_param(None)}{_form_anchor()}')
 
 
@@ -227,7 +221,8 @@ def local():
     for local_item in items:
         LocalItem.loadit(local_item)
         _remove_extra_tags(local_item.item)
-    return template('local', items=items, page_info=page_info, path=request.path)
+    return template('local', items=items, page_info=page_info, pending=count_local_items_without_item(),
+                    path=request.path)
 
 
 @route('/local_play/<id:int>')
@@ -245,6 +240,29 @@ def local_play(id):
     redirect(requote_uri(file_path))
 
 
+def _import_message(result):
+    '''
+    导入打标数据的结果提示，返回 (msg, errmsg)
+    '''
+    parts = []
+    if result.imported:
+        text = f'已导入 {result.imported} 条打标'
+        if result.updated:
+            text += f'（其中 {result.updated} 条原来是系统推荐）'
+        parts.append(text)
+    elif result.kept:
+        parts.append('没有新的打标（都已导入过）')
+    if result.imported and result.kept:
+        parts.append(f'{result.kept} 条已有用户打标，没有改动')
+    if result.missed_fanhaos:
+        parts.append(f'{len(result.missed_fanhaos)} 个番号加入下载队列')
+    if result.invalid:
+        parts.append(f'跳过 {result.invalid} 条番号或评分不合法的打标')
+    if result.imported or result.kept:
+        return '，'.join(parts), ''
+    return '', '，'.join(['上传的数据库里没有可导入的用户打标'] + parts)
+
+
 @route('/load_db', method=['GET', 'POST'])
 def load_db():
     msg = ''
@@ -252,18 +270,15 @@ def load_db():
     if request.POST.submit:
         upload = request.files.get('dbfile')
         if upload:
-            logger.debug(upload.filename)
-            name = get_data_path(UPLOADED_DB)
-            upload.save(name, overwrite=True)
-            logger.debug(f'uploaded file saved to {name}')
+            path = save_upload(upload)
+            logger.debug(f'上传的 {upload.filename} 存为 {path}')
             try:
-                tag_file_added, missed_fanhaos = load_tags_db()
+                result = load_tags_db(path)
             except DBError as ex:
                 errmsg = f'数据库文件错误：{ex}。请选择 bustag 的 bus.db 文件'
             else:
-                add_download_job(missed_fanhaos)
-                msg = f'上传 {tag_file_added} 条用户打标数据, {len(missed_fanhaos)} 个番号, '
-                msg += '  注意: 需要下载其他数据才能开始建模, 请等候一定时间'
+                add_download_job(result.missed_fanhaos)
+                msg, errmsg = _import_message(result)
         else:
             errmsg = '请上传数据库文件'
     return template('load_db', path=request.path, msg=msg, errmsg=errmsg)
@@ -279,9 +294,11 @@ app = bottle.default_app()
 
 def create_app():
     '''
-    启动定时任务（只启动一次）并返回 WSGI 应用。用 gunicorn 时只能开 1 个 worker（定时任务在进程内）：
+    清掉上次运行留下的上传临时文件，启动定时任务（只启动一次）并返回 WSGI 应用。
+    用 gunicorn 时只能开 1 个 worker（定时任务在进程内）：
     gunicorn -w 1 "bustag.app.index:create_app()" --bind 0.0.0.0:8000
     '''
+    remove_stale_uploads()
     start_scheduler()
     return app
 

@@ -20,6 +20,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 
 import bustag
 from bustag.app import index, schedule
+from bustag.app.local import add_local_fanhao
 from bustag.model import classifier
 from bustag.spider import db
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, ItemRate, LocalItem
@@ -220,6 +221,15 @@ class TestTagForm:
         assert (rate.rate_type, rate.rate_value) == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
         assert ItemRate.select().count() == 1
 
+    def test_user_changes_own_tag(self, wsgi, make_item):
+        make_item('ABC-001')
+        ItemRate.saveit(RATE_TYPE.USER_RATE, RATE_VALUE.LIKE, 'ABC-001')
+        assert 'value="0">不喜欢</button>' in wsgi.get('/tagit?like=1').text
+        wsgi.post('/tag/ABC-001?like=1', {'submit': '0'})
+        rate = ItemRate.get_by_fanhao('ABC-001')
+        assert (rate.rate_type, rate.rate_value) == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        assert ItemRate.select().count() == 1
+
     @pytest.mark.parametrize('data', [{}, {'submit': ''}, {'submit': '2'}, {'submit': 'like'}])
     def test_rejects_other_values(self, wsgi, make_item, data):
         make_item('ABC-001')
@@ -328,8 +338,8 @@ class TestLocalFiles:
         text = wsgi.get('/local').text
         assert covers_on(text) == ['ABC-001']
         assert f'href="/local_play/{local.id}"' in text
+        assert '影片信息没有下载到' not in text
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：本地文件页的总条数算上了还没抓到影片信息的番号，和列出的条数对不上')
     def test_total_matches_listed_files(self, wsgi, make_item):
         make_item('ABC-001')
         LocalItem.saveit('ABC-001', 'http://media.local/ABC-001.mp4')
@@ -340,6 +350,15 @@ class TestLocalFiles:
         total = re.search(r'共\s+\d+页,(\d+)条', text)
         assert listed and total
         assert len(listed) == int(total.group(1))
+
+    def test_files_without_movie_info_are_explained(self, wsgi, make_item):
+        make_item('HAVE-001')
+        add_local_fanhao('HAVE-001,http://nas/HAVE-001.mp4\n300MIUM-1506,http://nas/a.mp4\n'
+                         'NOPE-001,http://nas/b.mp4', tag_like=False)
+        text = wsgi.get('/local').text
+        assert covers_on(text) == ['HAVE-001']
+        assert '共  1页,1条' in text
+        assert '还有 2 个本地文件的影片信息没有下载到（正在下载，或者番号不存在、下载失败），暂不显示' in text
 
     @pytest.mark.xfail(strict=True, reason='产品缺陷：本地文件页的标签写成了「观看次数观看」')
     def test_local_page_view_count_label(self, wsgi, make_item):

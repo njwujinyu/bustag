@@ -8,7 +8,7 @@ from typing import Optional
 
 from bustag.spider.db import Item, save
 from bustag.spider.fetcher import BlockedError, FetchError, create_fetcher
-from bustag.spider.parser import ParseError, fanhao_from_path, has_next_page, parse_item, parse_list
+from bustag.spider.parser import ParseError, fanhao_from_path, has_next_page, is_valid_fanhao, parse_item, parse_list
 from bustag.util import APP_CONFIG, get_full_url, logger
 
 EMPTY_PAGES_LIMIT = 3
@@ -175,7 +175,7 @@ def download(count=None, max_page=None, fetcher=None):
 def download_fanhaos(fanhaos, fetcher=None):
     '''
     按番号抓取详情页（本地番号上传、导入打标库时用），库里已有的跳过。
-    已有抓取在运行时等它结束再开始。
+    番号会拼进网址，不合法的记为失败、不发请求。已有抓取在运行时等它结束再开始。
     '''
     wanted = []
     for fanhao in fanhaos:
@@ -191,6 +191,9 @@ def download_fanhaos(fanhaos, fetcher=None):
                 fetcher = create_fetcher()
             logger.info(f'开始按番号抓取 {len(wanted)} 部')
             for fanhao in wanted:
+                if not is_valid_fanhao(fanhao):
+                    _fail(result, fanhao, '番号不合法')
+                    continue
                 if Item.get_by_fanhao(fanhao):
                     result.skipped += 1
                     continue

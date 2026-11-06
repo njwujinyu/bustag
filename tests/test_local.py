@@ -2,11 +2,20 @@
 本地番号与打标数据导入：add_local_fanhao、load_tags_db，以及 /local_fanhao、/load_db 页面。
 测试里定时任务没有启动，加入下载队列只会写一条警告，不会联网
 '''
+import datetime
+import io
+import logging
+import os
 import sqlite3
+import threading
 
+import bottle
 import pytest
 
-from bustag.app.local import UPLOADED_DB, add_local_fanhao, load_tags_db
+from bustag.app import index
+from bustag.app.local import (UPLOAD_PREFIX, TagsImport, add_local_fanhao, load_tags_db, remove_stale_uploads,
+                              save_upload)
+from bustag.spider import db
 from bustag.spider.db import RATE_TYPE, RATE_VALUE, DBError, ItemRate, LocalItem
 
 USER, SYSTEM = RATE_TYPE.USER_RATE, RATE_TYPE.SYSTEM_RATE
@@ -69,7 +78,13 @@ def local_path(fanhao):
 
 
 def leftovers(data_dir):
-    return sorted(p.name for p in data_dir.glob(UPLOADED_DB + '*'))
+    '''数据目录里剩下的上传临时文件'''
+    return sorted(p.name for p in data_dir.glob(UPLOAD_PREFIX + '*'))
+
+
+def upload_path(data_dir):
+    '''load_tags_db 读的上传文件，和 save_upload 存的一样放在数据目录里'''
+    return data_dir / (UPLOAD_PREFIX + 'test.db')
 
 
 class TestAddLocalFanhao:
@@ -83,6 +98,15 @@ class TestAddLocalFanhao:
         ('ABC-123,http://media.local/ABC-123.mp4', 'ABC-123', 'http://media.local/ABC-123.mp4'),
         ('ABC-123 ,  http://media.local/ABC-123.mp4  ', 'ABC-123', 'http://media.local/ABC-123.mp4'),
         ('ABC-123,http://media.local/a,b.mp4', 'ABC-123', 'http://media.local/a,b.mp4'),
+        # 横线前带数字的番号，以及其他常见写法
+        ('300MIUM-1506', '300MIUM-1506', None),
+        ('259luxu-1908', '259LUXU-1908', None),
+        ('T28-123', 'T28-123', None),
+        ('SSIS-001', 'SSIS-001', None),
+        ('abp001', 'ABP-001', None),
+        ('[FHD]SSIS-001.mp4', 'SSIS-001', None),
+        ('SSIS-001,http://nas/a,b.mp4', 'SSIS-001', 'http://nas/a,b.mp4'),
+        ('1080P SSIS-001', 'SSIS-001', None),
     ])
     def test_line_formats(self, line, fanhao, path):
         missed, local_added, tag_added = add_local_fanhao(line, tag_like=False)
@@ -90,6 +114,14 @@ class TestAddLocalFanhao:
         assert (local_added, tag_added) == (1 if path else 0, 0)
         assert local_path(fanhao) == path
         assert rate_of(fanhao) is None
+
+    def test_review_sample_lines(self):
+        lines = ['300MIUM-1506', '259luxu-1908', 'T28-123', 'SSIS-001', 'abp001', '[FHD]SSIS-001.mp4',
+                 'SSIS-002,http://nas/a,b.mp4']
+        missed, local_added, _ = add_local_fanhao('\n'.join(lines), tag_like=False)
+        assert missed == ['300MIUM-1506', '259LUXU-1908', 'T28-123', 'SSIS-001', 'ABP-001', 'SSIS-002']
+        assert local_added == 1
+        assert local_path('SSIS-002') == 'http://nas/a,b.mp4'
 
     def test_lines_without_fanhao_are_ignored(self):
         text = '\n   \n没有番号的一行\n123-456\n,http://media.local/x.mp4\n'
@@ -120,18 +152,23 @@ class TestAddLocalFanhao:
         assert add_local_fanhao('ABC-001', tag_like=True) == ([], 0, 0)
         assert rate_of('ABC-001') == (USER, DISLIKE)
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：带数字前缀的番号被截掉前缀（123ABC-456 记成 ABC-456）')
     def test_digit_prefixed_fanhao_is_kept(self):
         missed, local_added, _ = add_local_fanhao('123ABC-456,http://media.local/x.mp4', tag_like=False)
         assert local_added == 1
         assert missed == ['123ABC-456']
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：番号已有系统推荐评分时，「全部打标为喜欢」被静默丢弃')
     def test_tag_like_replaces_system_rate(self, make_item):
-        make_item('ABC-001')
-        ItemRate.saveit(SYSTEM, DISLIKE, 'ABC-001')
-        _, _, tag_added = add_local_fanhao('ABC-001', tag_like=True)
-        assert rate_of('ABC-001') == (USER, LIKE)
+        make_item('SYS-001')
+        make_item('SYS-002')
+        ItemRate.saveit(SYSTEM, DISLIKE, 'SYS-001')
+        ItemRate.saveit(SYSTEM, DISLIKE, 'SYS-002')
+        _, _, tag_added = add_local_fanhao('SYS-001\nSYS-002', tag_like=True)
+        assert rate_of('SYS-001') == rate_of('SYS-002') == (USER, LIKE)
+        assert tag_added == 2
+
+    def test_repeated_fanhao_is_queued_once(self):
+        missed, _, tag_added = add_local_fanhao('ABC-001\nabc001\n[FHD]ABC-001.mp4', tag_like=True)
+        assert missed == ['ABC-001']
         assert tag_added == 1
 
 
@@ -155,8 +192,8 @@ class TestLoadTagsDb:
     @pytest.mark.parametrize('old_format', [False, True], ids=['item_id-is-fanhao', 'item_id-is-item-id'])
     def test_imports_user_rates_only(self, data_dir, make_item, old_format):
         make_item('ABC-001')
-        make_tags_db(data_dir / UPLOADED_DB, RATES, old_format=old_format)
-        assert load_tags_db() == (2, ['ABC-002'])
+        path = make_tags_db(upload_path(data_dir), RATES, old_format=old_format)
+        assert load_tags_db(str(path)) == TagsImport(added=2, missed_fanhaos=['ABC-002'])
         assert rate_of('ABC-001') == (USER, LIKE)
         assert rate_of('ABC-002') == (USER, DISLIKE)
         assert rate_of('ABC-003') is None
@@ -164,24 +201,49 @@ class TestLoadTagsDb:
         assert leftovers(data_dir) == []
 
     def test_wal_mode_database(self, data_dir):
-        make_tags_db(data_dir / UPLOADED_DB, RATES, wal=True)
-        assert load_tags_db() == (2, ['ABC-001', 'ABC-002'])
+        path = make_tags_db(upload_path(data_dir), RATES, wal=True)
+        assert load_tags_db(str(path)) == TagsImport(added=2, missed_fanhaos=['ABC-001', 'ABC-002'])
         assert leftovers(data_dir) == []
 
     def test_existing_user_rates_are_kept(self, data_dir, make_item):
         make_item('ABC-001')
         ItemRate.saveit(USER, DISLIKE, 'ABC-001')
-        make_tags_db(data_dir / UPLOADED_DB, [('ABC-001', USER, LIKE)])
-        assert load_tags_db() == (0, [])
+        path = make_tags_db(upload_path(data_dir), [('ABC-001', USER, LIKE)])
+        assert load_tags_db(str(path)) == TagsImport(kept=1)
         assert rate_of('ABC-001') == (USER, DISLIKE)
 
-    @pytest.mark.xfail(strict=True, reason='产品缺陷：导入的用户打标遇到本地已有的系统推荐评分时被静默丢弃')
     def test_import_replaces_system_rate(self, data_dir, make_item):
-        make_item('ABC-001')
-        ItemRate.saveit(SYSTEM, DISLIKE, 'ABC-001')
-        make_tags_db(data_dir / UPLOADED_DB, [('ABC-001', USER, LIKE)])
-        load_tags_db()
-        assert rate_of('ABC-001') == (USER, LIKE)
+        make_item('SYS-002')
+        ItemRate.saveit(SYSTEM, DISLIKE, 'SYS-002')
+        path = make_tags_db(upload_path(data_dir), [('SYS-002', USER, LIKE)])
+        assert load_tags_db(str(path)) == TagsImport(updated=1)
+        assert rate_of('SYS-002') == (USER, LIKE)
+
+    def test_system_rate_changed_to_user_rate_gets_new_time(self, data_dir, make_item, monkeypatch):
+        now = datetime.datetime(2026, 11, 7, 9, 30)
+        monkeypatch.setattr(db, 'get_now_time', lambda: now)
+        make_item('SYS-002')
+        ItemRate.create(item='SYS-002', rate_type=SYSTEM, rate_value=DISLIKE,
+                        rete_time=datetime.datetime(2026, 1, 1))
+        load_tags_db(str(make_tags_db(upload_path(data_dir), [('SYS-002', USER, LIKE)])))
+        assert ItemRate.get_by_fanhao('SYS-002').rete_time == now
+
+    def test_fanhaos_are_checked_and_uppercased(self, data_dir, caplog):
+        caplog.set_level(logging.INFO, logger='bustag')
+        path = make_tags_db(upload_path(data_dir), [
+            ('/evil.example/x', USER, LIKE),
+            ('../x', USER, LIKE),
+            ('含 空格', USER, LIKE),
+            ('ssis-001', USER, LIKE),
+            ('SSIS-001', USER, LIKE),
+            ('ABC-002', USER, 5),
+        ])
+        result = load_tags_db(str(path))
+        assert result == TagsImport(added=1, kept=1, invalid=4, missed_fanhaos=['SSIS-001'])
+        assert rate_of('SSIS-001') == (USER, LIKE)
+        assert ItemRate.select().count() == 1
+        assert ('导入打标数据：新增 1 条，由系统推荐改为用户打标 0 条，已有用户打标 1 条，'
+                '跳过不合法的 4 条，1 个番号需要下载') in caplog.messages
 
     @pytest.mark.parametrize('write, message', [
         (write_garbage, '不是有效的 SQLite 数据库文件'),
@@ -190,11 +252,97 @@ class TestLoadTagsDb:
         (write_missing_column, '数据库结构和 bustag 不一致：'),
     ], ids=['garbage', 'empty', 'other-tables', 'missing-column'])
     def test_not_a_bustag_database(self, data_dir, write, message):
-        write(data_dir / UPLOADED_DB)
+        path = upload_path(data_dir)
+        write(path)
         with pytest.raises(DBError, match=message):
-            load_tags_db()
+            load_tags_db(str(path))
         assert leftovers(data_dir) == []
         assert ItemRate.select().count() == 0
+
+
+def file_upload(content, filename='bus.db'):
+    return bottle.FileUpload(io.BytesIO(content), 'dbfile', filename)
+
+
+class TestUploadFiles:
+    def test_each_upload_gets_its_own_file(self, data_dir, tmp_path):
+        first = save_upload(file_upload(make_tags_db(tmp_path / 'a.db', [('ABC-001', USER, LIKE)]).read_bytes()))
+        second = save_upload(file_upload(make_tags_db(tmp_path / 'b.db', [('ABC-002', USER, DISLIKE)]).read_bytes()))
+        assert first != second
+        assert os.path.dirname(first) == os.path.dirname(second) == str(data_dir)
+        # 先存的后读：两次上传交错进行时，各自读到的还是自己上传的库
+        assert load_tags_db(second) == TagsImport(added=1, missed_fanhaos=['ABC-002'])
+        assert load_tags_db(first) == TagsImport(added=1, missed_fanhaos=['ABC-001'])
+        assert leftovers(data_dir) == []
+
+    def test_concurrent_imports_both_succeed(self, data_dir, monkeypatch):
+        '''
+        第一个导入在事务里读过库、还没写的时候，第二个导入开始：两个都要导入成功
+        '''
+        paths = {name: str(make_tags_db(data_dir / f'{UPLOAD_PREFIX}{name}.db', [(f'{name}-001', USER, LIKE)]))
+                 for name in ('AAA', 'BBB')}
+        real_save = ItemRate.save_user_rate
+        first_read = threading.Event()
+        second_read = threading.Event()
+
+        def save_user_rate(fanhao, rate_value, replace_user_rate=False):
+            ItemRate.get_by_fanhao(fanhao)
+            if fanhao.startswith('AAA'):
+                first_read.set()
+                second_read.wait(1)
+            else:
+                second_read.set()
+            return real_save(fanhao, rate_value, replace_user_rate)
+
+        monkeypatch.setattr(ItemRate, 'save_user_rate', staticmethod(save_user_rate))
+        results = {}
+        errors = []
+
+        def run(name):
+            try:
+                results[name] = load_tags_db(paths[name])
+            except Exception as ex:
+                errors.append(ex)
+            finally:
+                db.db.close()
+
+        first = threading.Thread(target=run, args=('AAA',))
+        first.start()
+        assert first_read.wait(5)
+        second = threading.Thread(target=run, args=('BBB',))
+        second.start()
+        first.join(15)
+        second.join(15)
+        assert errors == []
+        assert results == {'AAA': TagsImport(added=1, missed_fanhaos=['AAA-001']),
+                           'BBB': TagsImport(added=1, missed_fanhaos=['BBB-001'])}
+        assert rate_of('AAA-001') == rate_of('BBB-001') == (USER, LIKE)
+        assert leftovers(data_dir) == []
+
+    def test_failed_save_leaves_nothing(self, data_dir):
+        class BrokenUpload:
+            def save(self, f):
+                f.write(b'partial')
+                raise OSError('磁盘已满')
+
+        with pytest.raises(OSError, match='磁盘已满'):
+            save_upload(BrokenUpload())
+        assert leftovers(data_dir) == []
+
+    def test_stale_uploads_are_removed(self, data_dir):
+        names = ['upload-a1b2c3.db', 'upload-a1b2c3.db-wal', 'upload-a1b2c3.db-shm', 'upload-x.db-journal',
+                 'bus.db', 'upload-notes.txt', 'uploaded.txt']
+        for name in names:
+            (data_dir / name).write_bytes(b'x')
+        remove_stale_uploads()
+        assert sorted(p.name for p in data_dir.iterdir() if p.is_file()) == [
+            'bus.db', 'upload-notes.txt', 'uploaded.txt']
+
+    def test_create_app_removes_stale_uploads(self, data_dir, monkeypatch):
+        monkeypatch.setattr(index, 'start_scheduler', lambda: None)
+        (data_dir / 'upload-a1b2c3.db').write_bytes(b'x')
+        assert index.create_app() is index.app
+        assert leftovers(data_dir) == []
 
 
 class TestLocalFanhaoPage:
@@ -209,6 +357,16 @@ class TestLocalFanhaoPage:
         text = wsgi.post('/local_fanhao', {'fanhao': 'ABC-001', 'submit': '1'}).text
         assert '已提交：1 个番号加入下载队列' in text
         assert rate_of('ABC-001') is None
+
+    def test_tag_like_counts_system_rates(self, wsgi, make_item):
+        make_item('SYS-001')
+        make_item('SYS-002')
+        ItemRate.saveit(SYSTEM, DISLIKE, 'SYS-001')
+        ItemRate.saveit(USER, DISLIKE, 'SYS-002')
+        text = wsgi.post('/local_fanhao', {'fanhao': 'SYS-001\r\nSYS-002', 'tag_like': '1', 'submit': '1'}).text
+        assert '已提交：1 个番号打标为喜欢' in text
+        assert rate_of('SYS-001') == (USER, LIKE)
+        assert rate_of('SYS-002') == (USER, DISLIKE)
 
     def test_nothing_new(self, wsgi):
         text = wsgi.post('/local_fanhao', {'fanhao': '没有番号', 'submit': '1'}).text
@@ -229,12 +387,17 @@ class TestLocalFanhaoPage:
         assert '已提交：2000 个本地文件' in response.text
 
 
+def upload(wsgi, content):
+    return wsgi.post_multipart('/load_db', [('dbfile', ('bus.db', content)), ('submit', '1')]).text
+
+
 class TestLoadDbPage:
     def test_upload(self, wsgi, tmp_path, data_dir, make_item, caplog):
         make_item('ABC-001')
-        content = make_tags_db(tmp_path / 'bus.db', RATES).read_bytes()
-        text = wsgi.post_multipart('/load_db', [('dbfile', ('bus.db', content)), ('submit', '1')]).text
-        assert '上传 2 条用户打标数据, 1 个番号' in text
+        text = upload(wsgi, make_tags_db(tmp_path / 'bus.db', RATES).read_bytes())
+        assert 'alert-success' in text
+        assert '已导入 2 条打标，1 个番号加入下载队列' in text
+        assert '需要下载其他数据' not in text
         assert rate_of('ABC-002') == (USER, DISLIKE)
         assert leftovers(data_dir) == []
         assert UPLOAD_WARNING.format(1) in caplog.messages
@@ -242,8 +405,46 @@ class TestLoadDbPage:
     def test_upload_large_database(self, wsgi, tmp_path):
         content = make_tags_db(tmp_path / 'bus.db', RATES, filler=3 * 1024 * 1024).read_bytes()
         assert len(content) > 3 * 1024 * 1024
-        text = wsgi.post_multipart('/load_db', [('dbfile', ('bus.db', content)), ('submit', '1')]).text
-        assert '上传 2 条用户打标数据, 2 个番号' in text
+        assert '已导入 2 条打标，2 个番号加入下载队列' in upload(wsgi, content)
+
+    def test_same_file_twice(self, wsgi, tmp_path, make_item):
+        make_item('ABC-001')
+        make_item('ABC-002')
+        content = make_tags_db(tmp_path / 'bus.db', RATES).read_bytes()
+        assert '已导入 2 条打标' in upload(wsgi, content)
+        text = upload(wsgi, content)
+        assert 'alert-success' in text
+        assert '没有新的打标（都已导入过）' in text
+        assert '已导入 ' not in text
+        assert '加入下载队列' not in text
+        assert '需要下载其他数据' not in text
+
+    def test_system_rates_changed_to_user_rates_are_counted(self, wsgi, tmp_path, make_item):
+        make_item('ABC-001')
+        make_item('ABC-002')
+        ItemRate.saveit(USER, DISLIKE, 'ABC-001')
+        ItemRate.saveit(SYSTEM, LIKE, 'ABC-002')
+        text = upload(wsgi, make_tags_db(tmp_path / 'bus.db', RATES).read_bytes())
+        assert '已导入 1 条打标（其中 1 条原来是系统推荐），1 条已有用户打标，没有改动' in text
+        assert rate_of('ABC-001') == (USER, DISLIKE)
+        assert rate_of('ABC-002') == (USER, DISLIKE)
+
+    def test_invalid_rows_are_reported(self, wsgi, tmp_path):
+        rows = [('ABC-001', USER, LIKE), ('/evil.example/x', USER, LIKE), ('含 空格', USER, DISLIKE)]
+        text = upload(wsgi, make_tags_db(tmp_path / 'bus.db', rows).read_bytes())
+        assert '已导入 1 条打标，1 个番号加入下载队列，跳过 2 条番号或评分不合法的打标' in text
+        assert [rate.item_id for rate in ItemRate.select()] == ['ABC-001']
+
+    @pytest.mark.parametrize('rows, message', [
+        ([('ABC-003', SYSTEM, LIKE), ('ABC-004', None, None)], '上传的数据库里没有可导入的用户打标'),
+        ([('../x', USER, LIKE)], '上传的数据库里没有可导入的用户打标，跳过 1 条番号或评分不合法的打标'),
+    ], ids=['no-user-rates', 'only-invalid'])
+    def test_nothing_to_import(self, wsgi, tmp_path, rows, message):
+        text = upload(wsgi, make_tags_db(tmp_path / 'bus.db', rows).read_bytes())
+        assert 'alert-danger' in text
+        assert 'alert-success' not in text
+        assert message in text
+        assert ItemRate.select().count() == 0
 
     def test_not_a_database(self, wsgi, data_dir):
         text = wsgi.post_multipart('/load_db', [('dbfile', ('notes.txt', b'hello ' * 500)), ('submit', '1')]).text

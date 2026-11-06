@@ -263,6 +263,13 @@ class TestDownloadFanhaos:
         assert result.stop_reason == '被拦截，停止抓取'
         assert fetcher.requests == ['/A-001', '/A-002']
 
+    def test_invalid_fanhaos_are_not_requested(self, site):
+        fetcher = site([])
+        result = download_fanhaos(['/evil.example/x', '../x', '含 空格', 'A-001'], fetcher=fetcher)
+        assert fetcher.requests == ['/A-001']
+        assert result.failed == [('/evil.example/x', '番号不合法'), ('../x', '番号不合法'), ('含 空格', '番号不合法')]
+        assert result.added == 1
+
 
 class TestDownloadResult:
     def test_summary(self):

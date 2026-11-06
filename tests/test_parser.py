@@ -8,7 +8,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from bustag.spider.parser import (
-    ParseError, Tag, fanhao_from_path, has_next_page, parse_item, parse_list,
+    ParseError, Tag, fanhao_from_path, has_next_page, is_valid_fanhao, parse_item, parse_list,
 )
 
 ZBBB_004_TAGS = [
@@ -226,3 +226,28 @@ class TestListPage:
 ])
 def test_fanhao_from_path(path, fanhao):
     assert fanhao_from_path(path) == fanhao
+
+
+@pytest.mark.parametrize('text, valid', [
+    ('SSIS-001', True),
+    ('300MIUM-1506', True),
+    ('FC2-PPV-123', True),
+    ('HEYZO-1234', True),
+    ('abp001', True),
+    ('GEBB-062_2026-10-31', True),
+    ('A' * 64, True),
+    ('A' * 65, False),
+    ('', False),
+    ('/evil.example/x', False),
+    ('../x', False),
+    ('含 空格', False),
+    ('ABC 001', False),
+    ('-ABC-001', False),
+    ('_ABC-001', False),
+    ('ABC-001\n', False),
+    ('ＡＢＣ-001', False),
+    ('ABC-001?x=1', False),
+    (None, False),
+])
+def test_is_valid_fanhao(text, valid):
+    assert is_valid_fanhao(text) is valid

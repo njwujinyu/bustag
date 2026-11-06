@@ -16,6 +16,11 @@
 		</ul>
 	</div>
  </div>
+% if pending:
+ <div class="row">
+	<div class="col-12 small text-muted">还有 {{pending}} 个本地文件的影片信息没有下载到（正在下载，或者番号不存在、下载失败），暂不显示</div>
+ </div>
+% end
 %#generate list of rows of items
 %for local_item in items:
 	<div class="row py-3">

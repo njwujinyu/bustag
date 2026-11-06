@@ -171,6 +171,27 @@ class ItemRate(BaseModel):
             return item_rate
 
     @staticmethod
+    def save_user_rate(fanhao, rate_value, replace_user_rate=False):
+        '''
+        保存用户打标：没有评分时新增；系统推荐的评分改成用户打标；已经是用户打标时，
+        replace_user_rate 为真才改（打标页上用户改自己的打标），批量打标和导入不改。
+        返回 'added'、'updated' 或 'kept'
+        '''
+        item_rate = ItemRate.get_by_fanhao(fanhao)
+        if item_rate is None:
+            if ItemRate.saveit(RATE_TYPE.USER_RATE, rate_value, fanhao) is not None:
+                return 'added'
+            # 查询之后、新增之前，别的请求先写入了这个番号的评分
+            item_rate = ItemRate.get_by_fanhao(fanhao)
+        if item_rate.rate_type == RATE_TYPE.USER_RATE and not replace_user_rate:
+            return 'kept'
+        item_rate.rate_type = RATE_TYPE.USER_RATE
+        item_rate.rate_value = rate_value
+        item_rate.rete_time = get_now_time()
+        item_rate.save()
+        return 'updated'
+
+    @staticmethod
     def getit(id):
         item_rate = ItemRate.get_or_none(ItemRate.id == id)
         return item_rate
@@ -276,10 +297,12 @@ def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
 
 def get_local_items(page=1, page_size=10):
     '''
-    get local items
+    有文件地址、影片信息已经下载到的本地文件，新加的在前。
+    影片信息还没下载到的不列出，也不算进总数，个数用 count_local_items_without_item() 另查
     '''
     items = []
     q = (LocalItem.select(LocalItem)
+         .join(Item)
          .where(LocalItem.path.is_null(False))
          .order_by(LocalItem.id.desc())
          )
@@ -293,16 +316,23 @@ def get_local_items(page=1, page_size=10):
     items_with_tags = prefetch(q, item_query, item_tag_query, tag_query)
 
     for local_item in items_with_tags:
-        try:
-            Item.loadit(local_item.item)
-            Item.get_tags_dict(local_item.item)
-            items.append(local_item)
-        except Exception:
-            pass
+        Item.loadit(local_item.item)
+        Item.get_tags_dict(local_item.item)
+        items.append(local_item)
 
     total_pages = (total_items + page_size - 1) // page_size
     page_info = (total_items, total_pages, page, page_size)
     return items, page_info
+
+
+def count_local_items_without_item():
+    '''
+    有文件地址、但影片信息还没下载到的本地文件数（正在下载，或者番号在网站上不存在、下载失败）
+    '''
+    return (LocalItem.select()
+            .join(Item, JOIN.LEFT_OUTER)
+            .where(LocalItem.path.is_null(False) & Item.id.is_null())
+            .count())
 
 
 def get_today_update_count():

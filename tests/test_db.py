@@ -83,6 +83,56 @@ class TestSave:
         assert (stored.rate_type, stored.rate_value) == (RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE)
 
 
+def stored_rate(fanhao):
+    item_rate = ItemRate.get_by_fanhao(fanhao)
+    return item_rate.rate_type, item_rate.rate_value
+
+
+class TestSaveUserRate:
+    NOW = datetime.datetime(2026, 11, 7, 9, 30, 0)
+
+    def test_new_rate(self, make_item):
+        make_item('ABC-001')
+        assert ItemRate.save_user_rate('ABC-001', RATE_VALUE.LIKE) == 'added'
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE)
+
+    @pytest.mark.parametrize('replace_user_rate', [False, True])
+    def test_system_rate_becomes_user_rate(self, make_item, monkeypatch, replace_user_rate):
+        monkeypatch.setattr(db, 'get_now_time', lambda: self.NOW)
+        make_item('ABC-001')
+        ItemRate.create(item='ABC-001', rate_type=RATE_TYPE.SYSTEM_RATE, rate_value=RATE_VALUE.LIKE,
+                        rete_time=datetime.datetime(2026, 1, 1))
+        outcome = ItemRate.save_user_rate('ABC-001', RATE_VALUE.DISLIKE, replace_user_rate=replace_user_rate)
+        assert outcome == 'updated'
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        assert ItemRate.get_by_fanhao('ABC-001').rete_time == self.NOW
+        assert ItemRate.select().count() == 1
+
+    def test_user_rate_is_kept_unless_replacing(self, make_item):
+        make_item('ABC-001')
+        rate('ABC-001', RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        assert ItemRate.save_user_rate('ABC-001', RATE_VALUE.LIKE) == 'kept'
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        assert ItemRate.save_user_rate('ABC-001', RATE_VALUE.LIKE, replace_user_rate=True) == 'updated'
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE)
+        assert ItemRate.select().count() == 1
+
+    def test_rate_written_by_another_request_in_between(self, make_item, monkeypatch):
+        make_item('ABC-001')
+        rate('ABC-001', RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        real_get = ItemRate.get_by_fanhao
+        calls = []
+
+        def first_lookup_misses(fanhao):
+            calls.append(fanhao)
+            return None if len(calls) == 1 else real_get(fanhao)
+
+        monkeypatch.setattr(ItemRate, 'get_by_fanhao', staticmethod(first_lookup_misses))
+        assert ItemRate.save_user_rate('ABC-001', RATE_VALUE.LIKE) == 'kept'
+        assert calls == ['ABC-001', 'ABC-001']
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+
+
 class TestQuery:
     def test_pagination_newest_first(self, make_item):
         with db.db.atomic():
@@ -162,6 +212,34 @@ class TestLocalItems:
         local = LocalItem.saveit('ABC-001', 'http://nas/a.mp4')
         LocalItem.loadit(local)
         assert local.last_view_date == ''
+
+    def test_files_without_movie_info_are_counted_separately(self, make_item):
+        make_item('ABC-001')
+        LocalItem.saveit('ABC-001', 'http://nas/ABC-001.mp4')
+        LocalItem.saveit('ABC-002', 'http://nas/ABC-002.mp4')
+        LocalItem.saveit('ABC-003', 'http://nas/ABC-003.mp4')
+        LocalItem.saveit('ABC-004', None)
+        items, page_info = db.get_local_items(page=1)
+        assert [local.item.fanhao for local in items] == ['ABC-001']
+        assert page_info == (1, 1, 1, 10)
+        assert db.count_local_items_without_item() == 2
+
+    def test_pages_count_only_listed_files(self, make_item):
+        with db.db.atomic():
+            for n in range(1, 13):
+                make_item(f'ABC-{n:03d}')
+                LocalItem.saveit(f'ABC-{n:03d}', f'http://nas/ABC-{n:03d}.mp4')
+                LocalItem.saveit(f'NOPE-{n:03d}', f'http://nas/NOPE-{n:03d}.mp4')
+        items, page_info = db.get_local_items(page=2)
+        assert page_info == (12, 2, 2, 10)
+        assert [local.item.fanhao for local in items] == ['ABC-002', 'ABC-001']
+
+    def test_broken_movie_info_is_not_hidden(self, make_item):
+        make_item('ABC-001')
+        db.Item.update(meta_info='{broken').where(db.Item.fanhao == 'ABC-001').execute()
+        LocalItem.saveit('ABC-001', 'http://nas/ABC-001.mp4')
+        with pytest.raises(json.JSONDecodeError):
+            db.get_local_items(page=1)
 
 
 class TestTodayCounts:
