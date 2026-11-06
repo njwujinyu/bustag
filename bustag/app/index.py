@@ -144,9 +144,7 @@ def update_local_fanhao():
         missed_fanhao, local_file_count, tag_file_count = add_local_fanhao(
             fanhao_list, tag_like)
         if len(missed_fanhao) > 0:
-            urls = [bus_spider.get_url_by_fanhao(
-                fanhao) for fanhao in missed_fanhao]
-            add_download_job(urls)
+            add_download_job(missed_fanhao)
             msg = f'上传 {len(missed_fanhao)} 个番号, {local_file_count} 个本地文件'
             if tag_like:
                 msg += f', {tag_file_count} 个打标为喜欢'
@@ -187,9 +185,7 @@ def load_db():
             except DBError:
                 errmsg = '数据库文件错误, 请检查文件是否正确上传'
             else:
-                urls = [bus_spider.get_url_by_fanhao(
-                        fanhao) for fanhao in missed_fanhaos]
-                add_download_job(urls)
+                add_download_job(missed_fanhaos)
                 msg = f'上传 {tag_file_added} 条用户打标数据, {len(missed_fanhaos)} 个番号, '
                 msg += '  注意: 需要下载其他数据才能开始建模, 请等候一定时间'
         else:
@@ -206,8 +202,7 @@ app = bottle.default_app()
 
 
 def start_app():
-    t = threading.Thread(target=start_scheduler)
-    t.start()
+    start_scheduler()
     run(host='0.0.0.0', server='paste', port=8000, debug=True)
     # run(host='0.0.0.0', port=8000, debug=True, reloader=False)
 
