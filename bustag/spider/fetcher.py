@@ -7,7 +7,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from bustag.util import APP_CONFIG, logger
+from bustag.util import APP_CONFIG, logger, redact_url
 
 USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36')
@@ -59,6 +59,7 @@ class Fetcher:
 
     def __init__(self, root_path, proxy=None, delay=1.5, timeout=20, retries=3):
         self.root_path = root_path.rstrip('/')
+        self.proxy = proxy
         self.proxies = {'http': proxy, 'https': proxy} if proxy else None
         self.delay = delay
         self.timeout = timeout
@@ -88,6 +89,13 @@ class Fetcher:
         if wait > 0:
             time.sleep(wait)
 
+    def _error_text(self, ex):
+        '''异常的文字。requests / urllib3 有时把代理地址原样写进去（例如端口不对时），里面的认证信息要隐去'''
+        text = str(ex)
+        if self.proxy:
+            text = text.replace(self.proxy, redact_url(self.proxy))
+        return text
+
     def _send(self, url, headers):
         self._throttle()
         try:
@@ -96,9 +104,10 @@ class Fetcher:
         except requests.exceptions.InvalidSchema as ex:
             if 'SOCKS' in str(ex):
                 raise FetchError('使用 socks 代理需要先安装 PySocks：pip install "requests[socks]"') from ex
-            raise FetchError(f'网址无效：{url}（{ex}）。请检查 config.ini 的 root_path。') from ex
+            raise FetchError(f'网址无效：{url}（{self._error_text(ex)}）。请检查 config.ini 的 root_path。') from ex
         except (requests.exceptions.MissingSchema, requests.exceptions.InvalidURL) as ex:
-            raise FetchError(f'网址或代理地址无效：{url}（{ex}）。请检查 config.ini 的 root_path 和 proxy。') from ex
+            raise FetchError(f'网址或代理地址无效：{url}（{self._error_text(ex)}）。'
+                             '请检查 config.ini 的 root_path 和 proxy。') from ex
         finally:
             self._last_request = time.monotonic()
 
@@ -125,7 +134,7 @@ class Fetcher:
             except FetchError:
                 raise
             except requests.RequestException as ex:
-                reason = f'网络连接失败（{type(ex).__name__}: {ex}）'
+                reason = f'网络连接失败（{type(ex).__name__}: {self._error_text(ex)}）'
                 status = None
                 continue
             status = resp.status_code

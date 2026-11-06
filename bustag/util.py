@@ -132,20 +132,21 @@ def get_full_url(path):
 
 def redact_url(url):
     '''
-    把网址里的密码换成 ***（http://user:***@host:port），用于日志和自检输出。
-    不带 scheme 的写法（user:pass@host:port）也处理；没有密码或解析失败时原样返回
+    隐去网址里的认证信息，用于日志和自检输出：有密码时把密码换成 ***（http://user:***@host:port）；
+    只有用户名时把用户名换成 ***（http://***@host:port），这个位置常放的是访问令牌。
+    不带 scheme 的写法（user:pass@host:port）也处理；没有认证信息或解析失败时原样返回
     '''
     prefix = '' if '://' in url else '//'
     try:
         parts = urlsplit(prefix + url)
-        password = parts.password
     except ValueError:
         return url
-    if not password:
-        return url
     userinfo, _, hostinfo = parts.netloc.rpartition('@')
-    user = userinfo.split(':', 1)[0]
-    return urlunsplit(parts._replace(netloc=f'{user}:***@{hostinfo}'))[len(prefix):]
+    if not userinfo:
+        return url
+    user, has_password, _ = userinfo.partition(':')
+    shown = f'{user}:***' if has_password else '***'
+    return urlunsplit(parts._replace(netloc=f'{shown}@{hostinfo}'))[len(prefix):]
 
 
 def is_dead_domain(root_path):

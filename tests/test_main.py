@@ -243,18 +243,30 @@ class TestCheck:
         monkeypatch.setenv('HTTPS_PROXY', 'http://10.0.0.1:3128')
         assert f'{OK} 代理：没有设置，使用系统 / 环境变量里的代理 http://10.0.0.1:3128' in invoke('check').output
 
-    def test_proxy_passwords_are_hidden(self, site, monkeypatch):
-        monkeypatch.setitem(util.APP_CONFIG, 'options.proxy', 'http://alice:s3cret@127.0.0.1:7890')
+    @pytest.mark.parametrize('proxy, shown, secret', [
+        ('http://alice:s3cret@127.0.0.1:7890', 'http://alice:***@127.0.0.1:7890', 's3cret'),
+        ('http://ghp_T0KEN@127.0.0.1:7890', 'http://***@127.0.0.1:7890', 'ghp_T0KEN'),
+        ('http://127.0.0.1:7890', 'http://127.0.0.1:7890', None),
+    ], ids=['user-and-password', 'user-only', 'no-credentials'])
+    def test_proxy_credentials_are_hidden(self, site, monkeypatch, proxy, shown, secret):
+        monkeypatch.setitem(util.APP_CONFIG, 'options.proxy', proxy)
         output = invoke('check').output
-        assert f'{OK} 代理：http://alice:***@127.0.0.1:7890（config.ini 里设置）' in output
-        assert 's3cret' not in output
+        assert f'{OK} 代理：{shown}（config.ini 里设置）' in output
+        if secret:
+            assert secret not in output
 
-    def test_environment_proxy_password_is_hidden(self, site, monkeypatch):
+    @pytest.mark.parametrize('proxy, shown, secret', [
+        ('http://bob:pa55@10.0.0.1:3128', 'http://bob:***@10.0.0.1:3128', 'pa55'),
+        ('http://ghp_T0KEN@10.0.0.1:3128', 'http://***@10.0.0.1:3128', 'ghp_T0KEN'),
+        ('http://10.0.0.1:3128', 'http://10.0.0.1:3128', None),
+    ], ids=['user-and-password', 'user-only', 'no-credentials'])
+    def test_environment_proxy_credentials_are_hidden(self, site, monkeypatch, proxy, shown, secret):
         monkeypatch.delenv('NO_PROXY')
-        monkeypatch.setenv('HTTPS_PROXY', 'http://bob:pa55@10.0.0.1:3128')
+        monkeypatch.setenv('HTTPS_PROXY', proxy)
         output = invoke('check').output
-        assert f'{OK} 代理：没有设置，使用系统 / 环境变量里的代理 http://bob:***@10.0.0.1:3128' in output
-        assert 'pa55' not in output
+        assert f'{OK} 代理：没有设置，使用系统 / 环境变量里的代理 {shown}' in output
+        if secret:
+            assert secret not in output
 
     def test_data_counts(self, site, make_item):
         make_item('ABC-001')

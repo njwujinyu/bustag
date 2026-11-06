@@ -297,6 +297,27 @@ class TestProxy:
             fetcher.get('/')
         assert len(adapter.sent) == 1
 
+    @pytest.mark.parametrize('proxy, shown, secret', [
+        ('http://ghp_T0KEN@127.0.0.1:99999', 'http://***@127.0.0.1:99999', 'ghp_T0KEN'),
+        ('http://alice:s3cret@127.0.0.1:99999', 'http://alice:***@127.0.0.1:99999', 's3cret'),
+    ], ids=['user-only', 'user-and-password'])
+    def test_invalid_proxy_message_hides_credentials(self, proxy, shown, secret):
+        # 端口超出范围时 urllib3 的报错里带着完整的代理地址
+        fetcher = Fetcher(ROOT, proxy=proxy, delay=0, retries=0)
+        with pytest.raises(FetchError, match='网址或代理地址无效') as info:
+            fetcher.get('/')
+        assert shown in str(info.value)
+        assert secret not in str(info.value)
+
+    def test_network_error_mentioning_the_proxy_hides_credentials(self):
+        proxy = 'http://ghp_T0KEN@127.0.0.1:7890'
+        error = requests.exceptions.ProxyError(f'Cannot connect to proxy {proxy}')
+        fetcher, _ = make_fetcher({ROOT + '/': error}, proxy=proxy, retries=0)
+        with pytest.raises(FetchError) as info:
+            fetcher.get('/')
+        assert 'Cannot connect to proxy http://***@127.0.0.1:7890' in str(info.value)
+        assert 'ghp_T0KEN' not in str(info.value)
+
 
 class TestInvalidAddress:
     def test_root_path_without_scheme(self):

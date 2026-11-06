@@ -189,14 +189,19 @@ class TestConfig:
             util.load_config()
         assert str(path) in str(info.value)
 
-    def test_debug_log_hides_proxy_password(self, data_dir, caplog):
+    @pytest.mark.parametrize('proxy, shown, secret', [
+        ('http://alice:s3cret@127.0.0.1:7890', 'http://alice:***@127.0.0.1:7890', 's3cret'),
+        ('http://ghp_T0KEN@127.0.0.1:7890', 'http://***@127.0.0.1:7890', 'ghp_T0KEN'),
+        ('http://127.0.0.1:7890', 'http://127.0.0.1:7890', None),
+    ], ids=['user-and-password', 'user-only', 'no-credentials'])
+    def test_debug_log_hides_proxy_credentials(self, data_dir, caplog, proxy, shown, secret):
         caplog.set_level(logging.DEBUG, logger='bustag')
-        (data_dir / 'config.ini').write_text('[options]\nproxy = http://alice:s3cret@127.0.0.1:7890\n',
-                                             encoding='utf-8')
+        (data_dir / 'config.ini').write_text(f'[options]\nproxy = {proxy}\n', encoding='utf-8')
         util.load_config()
         log = '\n'.join(caplog.messages)
-        assert 'options.proxy = http://alice:***@127.0.0.1:7890' in log
-        assert 's3cret' not in log
+        assert f'options.proxy = {shown}' in log
+        if secret:
+            assert secret not in log
 
 
 @pytest.mark.parametrize('url, shown', [
@@ -205,7 +210,11 @@ class TestConfig:
     ('http://user:p@ss@host:8080', 'http://user:***@host:8080'),
     ('http://u:pw@host/path?q=1', 'http://u:***@host/path?q=1'),
     ('alice:s3cret@127.0.0.1:7890', 'alice:***@127.0.0.1:7890'),
-    ('http://alice@127.0.0.1:7890', 'http://alice@127.0.0.1:7890'),
+    ('http://user:@host:8080', 'http://user:***@host:8080'),
+    ('http://alice@127.0.0.1:7890', 'http://***@127.0.0.1:7890'),
+    ('socks5h://ghp_T0KEN@proxy.local:1080', 'socks5h://***@proxy.local:1080'),
+    ('ghp_T0KEN@127.0.0.1:7890', '***@127.0.0.1:7890'),
+    ('http://@127.0.0.1:7890', 'http://@127.0.0.1:7890'),
     ('http://127.0.0.1:7890', 'http://127.0.0.1:7890'),
     ('http://[::1', 'http://[::1'),
     ('10800', '10800'),
