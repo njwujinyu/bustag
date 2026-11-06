@@ -133,6 +133,39 @@ class TestSaveUserRate:
         assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
 
 
+class TestConfirmSystemRate:
+    @pytest.mark.parametrize('system, is_correct, expected', [
+        (RATE_VALUE.LIKE, True, RATE_VALUE.LIKE),
+        (RATE_VALUE.LIKE, False, RATE_VALUE.DISLIKE),
+        (RATE_VALUE.DISLIKE, True, RATE_VALUE.DISLIKE),
+        (RATE_VALUE.DISLIKE, False, RATE_VALUE.LIKE),
+    ])
+    def test_system_rate_becomes_user_rate(self, make_item, system, is_correct, expected):
+        make_item('ABC-001')
+        rate('ABC-001', RATE_TYPE.SYSTEM_RATE, system)
+        assert ItemRate.confirm_system_rate('ABC-001', is_correct) is True
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, expected)
+
+    @pytest.mark.parametrize('is_correct', [True, False])
+    def test_user_rate_is_left_alone(self, make_item, is_correct):
+        make_item('ABC-001')
+        rate('ABC-001', RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+        assert ItemRate.confirm_system_rate('ABC-001', is_correct) is False
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+
+    def test_second_confirmation_changes_nothing(self, make_item):
+        make_item('ABC-001')
+        rate('ABC-001', RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE)
+        assert ItemRate.confirm_system_rate('ABC-001', False) is True
+        assert ItemRate.confirm_system_rate('ABC-001', False) is False
+        assert stored_rate('ABC-001') == (RATE_TYPE.USER_RATE, RATE_VALUE.DISLIKE)
+
+    def test_without_rate(self, make_item):
+        make_item('ABC-001')
+        assert ItemRate.confirm_system_rate('ABC-001', True) is False
+        assert ItemRate.get_by_fanhao('ABC-001') is None
+
+
 class TestQuery:
     def test_pagination_newest_first(self, make_item):
         with db.db.atomic():
@@ -144,12 +177,19 @@ class TestQuery:
         items, page_info = db.get_items(page=3)
         assert page_info == (25, 3, 3, 10)
         assert [item.fanhao for item in items] == [f'ABC-{n:03d}' for n in range(5, 0, -1)]
-        items, page_info = db.get_items(page=4)
-        assert items == []
-        assert page_info == (25, 3, 4, 10)
 
-    def test_empty_database(self):
-        assert db.get_items(page=1) == ([], (0, 0, 1, 10))
+    @pytest.mark.parametrize('page', [4, 10 ** 12])
+    def test_page_after_the_last_returns_the_last_page(self, make_item, page):
+        with db.db.atomic():
+            for n in range(1, 26):
+                make_item(f'ABC-{n:03d}')
+        items, page_info = db.get_items(page=page)
+        assert page_info == (25, 3, 3, 10)
+        assert [item.fanhao for item in items] == [f'ABC-{n:03d}' for n in range(5, 0, -1)]
+
+    @pytest.mark.parametrize('page', [1, 5])
+    def test_empty_database(self, page):
+        assert db.get_items(page=page) == ([], (0, 0, 1, 10))
 
     def test_filter_by_rate(self, make_item):
         for fanhao in ('A-001', 'A-002', 'A-003', 'A-004'):
@@ -231,6 +271,9 @@ class TestLocalItems:
                 LocalItem.saveit(f'ABC-{n:03d}', f'http://nas/ABC-{n:03d}.mp4')
                 LocalItem.saveit(f'NOPE-{n:03d}', f'http://nas/NOPE-{n:03d}.mp4')
         items, page_info = db.get_local_items(page=2)
+        assert page_info == (12, 2, 2, 10)
+        assert [local.item.fanhao for local in items] == ['ABC-002', 'ABC-001']
+        items, page_info = db.get_local_items(page=3)
         assert page_info == (12, 2, 2, 10)
         assert [local.item.fanhao for local in items] == ['ABC-002', 'ABC-001']
 

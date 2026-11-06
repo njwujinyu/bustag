@@ -184,17 +184,13 @@ def tag(fanhao):
 @route('/correct/<fanhao>', method='POST')
 def correct(fanhao):
     is_correct = _submit_value()
-    item_rate = ItemRate.get_by_fanhao(fanhao)
-    if not item_rate:
+    if ItemRate.get_by_fanhao(fanhao) is None:
         _abort(404, '没有这个番号的推荐记录')
-    item_rate.rate_type = RATE_TYPE.USER_RATE
-    if not is_correct:
-        rate_value = item_rate.rate_value
-        rate_value = 1 if rate_value == 0 else 0
-        item_rate.rate_value = rate_value
-    item_rate.save()
-    logger.debug(
-        f'updated item fanhao: {fanhao}, {"and correct the rate_value" if not is_correct else ""}')
+    # 只改还是系统推荐的评分；已经是用户打标（重复提交、旧页面上再点）就不动，直接跳回
+    if ItemRate.confirm_system_rate(fanhao, is_correct):
+        logger.debug(f'确认推荐 {fanhao}：{"推荐对了" if is_correct else "推荐错了，评分已反过来"}')
+    else:
+        logger.debug(f'{fanhao} 已经是用户打标，没有改动')
     redirect(f'/?page={_page_param()}&like={_like_param(RATE_VALUE.LIKE.value)}{_form_anchor()}')
 
 

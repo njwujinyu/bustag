@@ -190,11 +190,16 @@ class TestTagPage:
         ('page=0', 1),
         ('page=-5', 1),
         ('page=', 1),
-        ('page=99999999999999999999', index.MAX_PAGE),
+        ('page=4', 3),
+        ('page=99999999999999999999', 3),
     ])
     def test_page_parameter(self, wsgi, make_item, query, page):
-        make_item('ABC-001')
-        assert f'第{page}页' in wsgi.get('/tagit?' + query).text
+        with db.db.atomic():
+            for i in range(1, 26):
+                make_item(f'ABC-{i:03d}')
+        text = wsgi.get('/tagit?' + query).text
+        assert f'第{page}页' in text
+        assert covers_on(text)
 
     def test_at_most_ten_genres_and_stars(self, wsgi, make_item):
         make_item('ABC-001', tags=[('genre', f'类别{i:02d}') for i in range(12)]
@@ -250,6 +255,18 @@ class TestTagForm:
         assert '没有这个番号' in response.text
         assert ItemRate.select().count() == 0
 
+    def test_tagging_the_only_movie_on_the_last_page_goes_back_to_the_new_last_page(self, wsgi, make_item):
+        with db.db.atomic():
+            for i in range(1, 12):
+                make_item(f'ABC-{i:03d}')
+        assert covers_on(wsgi.get('/tagit?page=2').text) == ['ABC-001']
+        path, query, _ = redirect_target(wsgi.post('/tag/ABC-001?page=2&like=None', {'submit': '1'}))
+        assert (path, query['page']) == ('/tagit', '2')
+        text = wsgi.get(f'/tagit?page={query["page"]}&like={query["like"]}').text
+        assert covers_on(text) == [f'ABC-{i:03d}' for i in range(11, 1, -1)]
+        assert '第1页' in text
+        assert 'action="/tag/ABC-011?page=1&like="' in text
+
     @pytest.mark.parametrize('formid, fragment', [
         ('form-1', 'form-1'),
         ('form-1000', 'form-1000'),
@@ -291,6 +308,39 @@ class TestCorrectForm:
         response = wsgi.post('/correct/ABC-001', {'submit': '3'})
         assert response.status == 400
         assert ItemRate.get_by_fanhao('ABC-001').rate_type == RATE_TYPE.SYSTEM_RATE
+
+    @pytest.mark.parametrize('first, second', [('0', '0'), ('0', '1'), ('1', '0'), ('1', '1')])
+    def test_second_submit_keeps_the_first_answer(self, wsgi, make_item, first, second):
+        '''双击按钮、后退到旧页面再点、开了两个标签页：第二次提交不改用户已经给出的答案'''
+        make_item('ABC-001')
+        ItemRate.saveit(RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE, 'ABC-001')
+        expected = (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE if first == '1' else RATE_VALUE.DISLIKE)
+        for submit in (first, second):
+            response = wsgi.post('/correct/ABC-001?page=1&like=1', {'submit': submit, 'formid': 'form-1'})
+            assert redirect_target(response) == ('/', {'page': '1', 'like': '1'}, 'form-1')
+            rate = ItemRate.get_by_fanhao('ABC-001')
+            assert (rate.rate_type, rate.rate_value) == expected
+
+    def test_tag_changed_on_the_tag_page_is_kept(self, wsgi, make_item):
+        make_item('ABC-001')
+        ItemRate.saveit(RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE, 'ABC-001')
+        wsgi.post('/tag/ABC-001', {'submit': '1'})
+        # 推荐页还开着打标之前的页面，在上面点了"错误"
+        wsgi.post('/correct/ABC-001', {'submit': '0'})
+        rate = ItemRate.get_by_fanhao('ABC-001')
+        assert (rate.rate_type, rate.rate_value) == (RATE_TYPE.USER_RATE, RATE_VALUE.LIKE)
+
+    def test_confirming_the_only_movie_on_the_last_page_goes_back_to_the_new_last_page(self, wsgi, make_item):
+        with db.db.atomic():
+            for i in range(1, 12):
+                make_item(f'ABC-{i:03d}')
+                ItemRate.saveit(RATE_TYPE.SYSTEM_RATE, RATE_VALUE.LIKE, f'ABC-{i:03d}')
+        path, query, _ = redirect_target(wsgi.post('/correct/ABC-001?page=2&like=1', {'submit': '1'}))
+        assert (path, query) == ('/', {'page': '2', 'like': '1'})
+        text = wsgi.get('/?page=2&like=1').text
+        assert covers_on(text) == [f'ABC-{i:03d}' for i in range(11, 1, -1)]
+        assert '第1页' in text
+        assert 'action="/correct/ABC-011?page=1&like=1"' in text
 
 
 class TestCover:
@@ -379,6 +429,13 @@ class TestLocalFiles:
         assert covers_on(text) == ['HAVE-001']
         assert '共  1页,1条' in text
         assert '还有 2 个本地文件的影片信息没有下载到（正在下载，或者番号不存在、下载失败），暂不显示' in text
+
+    def test_page_after_the_last_shows_the_last_page(self, wsgi, make_item):
+        make_item('ABC-001')
+        LocalItem.saveit('ABC-001', 'http://media.local/ABC-001.mp4')
+        text = wsgi.get('/local?page=5').text
+        assert covers_on(text) == ['ABC-001']
+        assert '第1页' in text
 
     def test_local_page_view_count_label(self, wsgi, make_item):
         make_item('ABC-001')

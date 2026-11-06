@@ -187,6 +187,22 @@ class ItemRate(BaseModel):
         return 'updated'
 
     @staticmethod
+    def confirm_system_rate(fanhao, is_correct):
+        '''
+        推荐页上确认系统推荐：推荐对了照原值、推荐错了把评分反过来，改成用户打标，返回 True。
+        已经是用户打标时不改、返回 False：双击按钮、后退到旧页面再点、两个标签页都点，都不会把用户的选择翻回去。
+        判断和修改在同一条 UPDATE 里，两个请求同时到也只改一次
+        '''
+        changes = {ItemRate.rate_type: RATE_TYPE.USER_RATE}
+        if not is_correct:
+            changes[ItemRate.rate_value] = Case(ItemRate.rate_value, [(RATE_VALUE.DISLIKE, RATE_VALUE.LIKE)],
+                                                RATE_VALUE.DISLIKE)
+        updated = (ItemRate.update(changes)
+                   .where((ItemRate.item_id == fanhao) & (ItemRate.rate_type == RATE_TYPE.SYSTEM_RATE))
+                   .execute())
+        return updated > 0
+
+    @staticmethod
     def get_by_fanhao(fanhao):
         item_rate = ItemRate.get_or_none(ItemRate.item_id == fanhao)
         return item_rate
@@ -253,9 +269,15 @@ def save(meta_info, tags):
     return item
 
 
+def _clamp_page(page, total_pages):
+    '''页码超过总页数时（例如处理完最后一页的最后一部）按最后一页查，没有数据时是第 1 页'''
+    return min(page, max(total_pages, 1))
+
+
 def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
     '''
-    get required items based on some conditions
+    get required items based on some conditions。
+    page 为 None 时返回全部；page 超过总页数时返回最后一页，page_info 里是实际的页码
     '''
     items_list = []
     clauses = []
@@ -271,7 +293,9 @@ def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
          .order_by(Item.id.desc())
          )
     total_items = q.count()
+    total_pages = (total_items + page_size - 1) // page_size
     if not page is None:
+        page = _clamp_page(page, total_pages)
         q = q.paginate(page, page_size)
     items = get_tags_for_items(q)
     for item in items:
@@ -280,14 +304,13 @@ def get_items(rate_type=None, rate_value=None, page=1, page_size=10):
         item.rate_value = item_rate.rate_value if item_rate is not None else None
         items_list.append(item)
 
-    total_pages = (total_items + page_size - 1) // page_size
     page_info = (total_items, total_pages, page, page_size)
     return items_list, page_info
 
 
 def get_local_items(page=1, page_size=10):
     '''
-    有文件地址、影片信息已经下载到的本地文件，新加的在前。
+    有文件地址、影片信息已经下载到的本地文件，新加的在前；page 超过总页数时返回最后一页。
     影片信息还没下载到的不列出，也不算进总数，个数用 count_local_items_without_item() 另查
     '''
     items = []
@@ -297,7 +320,9 @@ def get_local_items(page=1, page_size=10):
          .order_by(LocalItem.id.desc())
          )
     total_items = q.count()
+    total_pages = (total_items + page_size - 1) // page_size
     if not page is None:
+        page = _clamp_page(page, total_pages)
         q = q.paginate(page, page_size)
 
     item_query = Item.select()
@@ -310,7 +335,6 @@ def get_local_items(page=1, page_size=10):
         Item.get_tags_dict(local_item.item)
         items.append(local_item)
 
-    total_pages = (total_items + page_size - 1) // page_size
     page_info = (total_items, total_pages, page, page_size)
     return items, page_info
 
