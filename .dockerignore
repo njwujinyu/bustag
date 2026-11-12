@@ -1,0 +1,12 @@
+# 镜像里只复制 requirements.txt、LICENSE 和 bustag/，这里让构建上下文尽量小
+# 根目录下点开头的文件和目录（版本管理、编辑器、虚拟环境这些）镜像里都用不到
+.*
+**/__pycache__
+**/*.py[cod]
+build
+dist
+data
+docs
+tests
+*.md
+docker-compose.yml

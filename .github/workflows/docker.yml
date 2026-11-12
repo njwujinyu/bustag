@@ -1,0 +1,224 @@
+name: Docker
+
+on:
+  push:
+    branches: [master, revive]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 两种架构各构建一次镜像（--load）并启动容器冒烟；arm64 在 amd64 运行器上走 QEMU
+  smoke:
+    name: "冒烟（${{ matrix.arch }}）"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            startup-limit: 90
+            stop-limit: 5
+          - arch: arm64
+            platform: linux/arm64
+            # QEMU 模拟下慢得多：启动放宽到 300 秒，docker stop 放宽到 8 秒
+            # （没处理 SIGTERM 时 docker stop 要等满 10 秒再强杀，8 秒仍然能区分）
+            startup-limit: 300
+            stop-limit: 8
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 设置 QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: "构建镜像（${{ matrix.platform }}）"
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: bustag:smoke-${{ matrix.arch }}
+          cache-from: type=gha,scope=bustag-${{ matrix.arch }}
+          cache-to: type=gha,scope=bustag-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: 镜像里带 LICENSE
+        env:
+          IMAGE: bustag:smoke-${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm --platform "$PLATFORM" "$IMAGE" test -f /app/LICENSE
+          echo '/app/LICENSE 存在'
+
+      - name: 启动容器并冒烟
+        env:
+          IMAGE: bustag:smoke-${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+          STARTUP_LIMIT: ${{ matrix.startup-limit }}
+          STOP_LIMIT: ${{ matrix.stop-limit }}
+        run: |
+          set -euo pipefail
+          name=bustag-smoke
+          url=http://127.0.0.1:8000
+          data="$RUNNER_TEMP/bustag-data"
+
+          mkdir -p "$data"
+          # 抓取指向容器里关闭的端口：冒烟只查本地页面，不访问 JavBus
+          printf '[download]\nroot_path = http://127.0.0.1:9\n' > "$data/config.ini"
+
+          cleanup() {
+            echo '--- 容器日志 ---'
+            docker logs "$name" 2>&1 | tail -n 60 || true
+            docker rm -f "$name" > /dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          # 把健康检查调快，QEMU 下 Python 启动慢，超时放宽。
+          # 程序默认只监听 127.0.0.1，镜像里用 BUSTAG_HOST=0.0.0.0 放开：不然下面从容器外面访问映射的端口连不上
+          docker run -d --name "$name" --platform "$PLATFORM" -p 8000:8000 -v "$data:/app/data" \
+            --health-start-period=0s --health-interval=3s --health-timeout=20s "$IMAGE" > /dev/null
+
+          wait_for_200() {
+            local path=$1 limit=$2 code=000
+            for _ in $(seq 1 "$limit"); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "$url$path" || true)
+              if [ "$code" = 200 ]; then
+                return 0
+              fi
+              if [ "$(docker inspect -f '{{.State.Running}}' "$name")" != true ]; then
+                echo "容器已经退出了（$path 最后一次状态码 $code）"
+                return 1
+              fi
+              sleep 1
+            done
+            echo "$path 在 $limit 秒内没有返回 200（最后一次状态码 $code）"
+            return 1
+          }
+
+          wait_for_200 / "$STARTUP_LIMIT"
+          echo '/ -> 200'
+          for path in /model /static/css/bustag.css; do
+            wait_for_200 "$path" 10
+            echo "$path -> 200"
+          done
+
+          # Dockerfile 里的 HEALTHCHECK 能跑通
+          health=starting
+          for _ in $(seq 1 60); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' "$name")
+            if [ "$health" = healthy ]; then
+              break
+            fi
+            sleep 3
+          done
+          echo "HEALTHCHECK 状态：$health"
+          [ "$health" = healthy ]
+
+          # TZ=Asia/Shanghai 要有 tzdata 才会生效，生效时 Python 报 CST
+          tz=$(docker exec "$name" python -c "import time; print(time.strftime('%Z'))")
+          echo "容器时区：$tz"
+          [ "$tz" = CST ]
+
+          # Python 是容器里的 PID 1，要自己处理 SIGTERM，否则 docker stop 会等满 10 秒再强杀
+          start=$(date +%s%3N)
+          docker stop "$name" > /dev/null
+          elapsed=$(( $(date +%s%3N) - start ))
+          exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+          echo "docker stop 用时 ${elapsed} 毫秒，退出码 ${exit_code}（上限 ${STOP_LIMIT} 秒）"
+          if [ "$exit_code" != 0 ]; then
+            echo '退出码不是 0，容器没有正常处理 SIGTERM（137 表示被 SIGKILL 强杀）'
+            exit 1
+          fi
+          if [ "$elapsed" -ge $(( STOP_LIMIT * 1000 )) ]; then
+            echo "docker stop 超过了 ${STOP_LIMIT} 秒"
+            exit 1
+          fi
+
+          # 网页服务给数据目录上锁（bustag.lock）。锁随进程结束而消失，文件留在挂载的数据目录里：
+          # 容器被强行结束（SIGKILL）之后再启动，不能被上一次留下的文件挡住
+          docker start "$name" > /dev/null
+          wait_for_200 / "$STARTUP_LIMIT"
+          docker kill "$name" > /dev/null
+          [ -f "$data/bustag.lock" ]
+          docker start "$name" > /dev/null
+          wait_for_200 / "$STARTUP_LIMIT"
+          echo '强行结束后再启动：/ -> 200，留下的锁文件没有挡住'
+
+          # 日志同时写在数据目录里
+          [ -s "$data/logs/bustag.log" ]
+          echo "日志文件：$(wc -l < "$data/logs/bustag.log") 行"
+
+  # 冒烟通过后一次性构建双架构镜像并推送到 ghcr.io；PR 不推送，也不跑这个作业。
+  # 缓存来自上面两个冒烟作业，不会重新构建。
+  publish:
+    name: 构建双架构镜像并推送
+    needs: smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 标签：分支名；默认分支另打 latest；v* 标签打版本号（v0.3.1 → 0.3.1、0.3，并自动打 latest）
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bustag
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: |
+            type=gha,scope=bustag-amd64
+            type=gha,scope=bustag-arm64

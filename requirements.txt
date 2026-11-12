@@ -1,0 +1,9 @@
+# 运行依赖。范围是"下限 + 下一个大版本上限"，更新依赖时要一起检查上限。
+APScheduler>=3.11,<4
+beautifulsoup4>=4.12,<5
+bottle>=0.13,<0.14
+click>=8.1,<9
+peewee>=4.0,<5
+requests[socks]>=2.32,<3
+scikit-learn>=1.3,<2
+waitress>=3.0,<4

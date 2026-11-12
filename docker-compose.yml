@@ -1,0 +1,14 @@
+services:
+  bustag:
+    image: ghcr.io/njwujinyu/bustag:latest
+    container_name: bustag
+    ports:
+      # 同一局域网里的设备都能访问（程序没有登录保护）；只想让这台机器自己访问时写成 "127.0.0.1:8000:8000"
+      - "8000:8000"
+    volumes:
+      # 数据库、配置文件、模型和封面缓存都在这个目录，升级镜像不会丢
+      - ./data:/app/data
+    environment:
+      # 容器时区，决定"今日更新"按哪天算
+      TZ: Asia/Shanghai
+    restart: unless-stopped

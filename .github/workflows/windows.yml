@@ -1,0 +1,340 @@
+name: Windows
+
+on:
+  push:
+    branches: [master, revive]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建 Windows 版
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      zip: ${{ steps.package.outputs.zip }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖和 PyInstaller
+        shell: pwsh
+        run: python -m pip install -r requirements.txt 'pyinstaller>=6,<7'
+
+      # 版本号取自 bustag/__init__.py；打 v* 标签时标签必须是 v<版本号>，否则 zip 的文件名会对不上标签
+      - name: 读取版本号
+        id: version
+        shell: pwsh
+        run: |
+          $version = python -c "import bustag; print(bustag.__version__)"
+          if ($LASTEXITCODE -ne 0 -or -not $version) { throw '读取 bustag.__version__ 失败' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "标签 $($env:GITHUB_REF_NAME) 和 bustag/__init__.py 里的版本 $version 不一致"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: PyInstaller 构建
+        shell: pwsh
+        run: pyinstaller --noconfirm bustag.spec
+
+      - name: 冒烟（启动 exe，检查首页和静态文件）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+          BUSTAG_PORT: '8765'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $data = $env:BUSTAG_DATA_DIR
+          $base = "http://127.0.0.1:$($env:BUSTAG_PORT)"
+          $logDir = Split-Path -Parent $data
+          $outLog = Join-Path $logDir 'bustag-exe.out.log'
+          $errLog = Join-Path $logDir 'bustag-exe.err.log'
+
+          # 抓取指向本机关闭的端口：冒烟只查本地页面，不访问 JavBus
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Set-Content -Path (Join-Path $data 'config.ini') -Encoding utf8 -Value @('[download]', 'root_path = http://127.0.0.1:9', '', '[options]', 'proxy = http://127.0.0.1:9')
+
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          try {
+              $ready = $false
+              while ($watch.Elapsed.TotalSeconds -lt 90) {
+                  if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                  try {
+                      if ((Invoke-WebRequest -Uri "$base/" -NoProxy -TimeoutSec 5).StatusCode -eq 200) { $ready = $true; break }
+                  } catch {
+                      Start-Sleep -Milliseconds 500
+                  }
+              }
+              if (-not $ready) { throw '90 秒内首页没有返回 200' }
+              '首页 200，启动用时 {0:N1} 秒' -f $watch.Elapsed.TotalSeconds
+              foreach ($path in '/model', '/static/css/bustag.css', '/static/images/nocover.svg') {
+                  $status = (Invoke-WebRequest -Uri "$base$path" -NoProxy -TimeoutSec 10).StatusCode
+                  "$path -> $status"
+                  if ($status -ne 200) { throw "$path 返回 $status" }
+              }
+
+              # 没有设置 BUSTAG_HOST：默认只监听本机
+              $listening = @(Get-NetTCPConnection -State Listen -LocalPort $env:BUSTAG_PORT | ForEach-Object { $_.LocalAddress })
+              "监听地址：$listening"
+              if ("$listening" -ne '127.0.0.1') { throw "默认应该只监听 127.0.0.1，实际是 $listening" }
+
+              # 日志同时写在数据目录里
+              $logFile = Join-Path $data 'logs\bustag.log'
+              if (-not (Test-Path $logFile) -or (Get-Item $logFile).Length -eq 0) { throw "没有日志文件 $logFile" }
+              "日志文件 $((Get-Item $logFile).Length) 字节"
+
+              # 同一个数据目录再启动一个实例：它应该马上退出（退出码 1），并说出第一个实例的地址。
+              # 标准输入接一个空文件，不然它会像双击运行时那样等着按回车
+              $empty = Join-Path $logDir 'bustag-empty.txt'
+              $secondOut = Join-Path $logDir 'bustag-second.out.log'
+              $secondErr = Join-Path $logDir 'bustag-second.err.log'
+              [IO.File]::WriteAllBytes($empty, [byte[]]@())
+              $second = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardInput $empty -RedirectStandardOutput $secondOut -RedirectStandardError $secondErr
+              $null = $second.Handle
+              if (-not $second.WaitForExit(60000)) {
+                  Stop-Process -Id $second.Id -Force
+                  throw '同一个数据目录的第二个实例 60 秒内没有退出'
+              }
+              if ($second.ExitCode -ne 1) { throw "第二个实例的退出码是 $($second.ExitCode)，应该是 1" }
+              $said = (Get-Content -Path $secondOut, $secondErr -Raw -Encoding ansi) -join "`n"
+              if (-not $said.Contains($base)) { throw "第二个实例的输出里没有第一个实例的地址 $base" }
+              if ($said -match 'Traceback') { throw '第二个实例输出了异常栈' }
+              if ($proc.HasExited) { throw '第二个实例启动之后，第一个实例退出了' }
+              "同一个数据目录的第二个实例退出码 1，输出里有第一个实例的地址 $base"
+          } finally {
+              if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              # exe 按系统 ANSI 代码页写日志
+              '--- bustag.exe 输出 ---'
+              Get-Content -Path $outLog, $errLog -Encoding ansi -ErrorAction SilentlyContinue
+          }
+
+      # root_path 指向关闭的端口，联网检查失败，退出码应该是 1。exe 按系统 ANSI 代码页输出（不认 PYTHONIOENCODING），
+      # runner 是英文系统，中文会变成 ?，所以只比对段落标题的个数和数据目录、root_path 这些 ASCII 内容
+      - name: 冒烟（bustag.exe check）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $logDir = Split-Path -Parent $env:BUSTAG_DATA_DIR
+          $outLog = Join-Path $logDir 'bustag-check.out.log'
+          $errLog = Join-Path $logDir 'bustag-check.err.log'
+          $proc = Start-Process -FilePath $exe -ArgumentList 'check' -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          $null = $proc.Handle
+          if (-not $proc.WaitForExit(120000)) {
+              Stop-Process -Id $proc.Id -Force
+              throw 'bustag.exe check 在 120 秒内没有结束'
+          }
+          $output = Get-Content -Path $outLog -Raw -Encoding ansi
+          '--- bustag.exe check 输出 ---'
+          $output
+          Get-Content -Path $errLog -Encoding ansi
+          if ($proc.ExitCode -ne 1) { throw "bustag.exe check 的退出码是 $($proc.ExitCode)，联网检查失败时应该是 1" }
+          $sections = @($output -split "`r?`n" | Where-Object { $_ -match '^== ' })
+          if ($sections.Count -ne 3) { throw "bustag.exe check 的输出应该有 3 个段落标题（配置、网站、数据），实际有 $($sections.Count) 个" }
+          foreach ($text in $env:BUSTAG_DATA_DIR, 'root_path', 'http://127.0.0.1:9') {
+              if (-not $output.Contains($text)) { throw "bustag.exe check 的输出里没有 $text" }
+          }
+          if ((Get-Content -Path $outLog, $errLog -Raw -Encoding ansi) -match 'Traceback') { throw 'bustag.exe check 输出了异常栈' }
+
+      # 打包后的 exe 里训练要用到 scikit-learn，依赖升级后最容易在这里出问题。用 runner 的 Python 和源码在数据目录里
+      # 生成合成打标数据（只在这里生成，不进任何产物），在 exe 里点"开始训练"：训练完会立刻给未打标的影片打分，
+      # 页面上写着打了多少部。再重启 exe 等首次定时任务打分：定时任务约 5 秒后开始抓取，端口关闭，约 20 秒后抓取失败，
+      # 接着打分。重启前补一批未打标的影片，它们只能由第二次运行用保存下来的模型文件打分。
+      # exe 的日志按 ANSI 代码页写（runner 上中文是 ?），打分完成看数据库：所有影片都有了评分
+      - name: 冒烟（exe 里训练和推荐）
+        shell: pwsh
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}\bustag-data
+          BUSTAG_PORT: '8765'
+          PYTHONIOENCODING: utf-8
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $exe = (Resolve-Path 'dist\bustag\bustag.exe').Path
+          $base = "http://127.0.0.1:$($env:BUSTAG_PORT)"
+          $logDir = Split-Path -Parent $env:BUSTAG_DATA_DIR
+          $logs = [Collections.Generic.List[string]]::new()
+
+          function Start-Bustag([string]$name) {
+              $outLog = Join-Path $logDir "bustag-$name.out.log"
+              $errLog = Join-Path $logDir "bustag-$name.err.log"
+              $logs.Add($outLog)
+              $logs.Add($errLog)
+              $proc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+              $watch = [Diagnostics.Stopwatch]::StartNew()
+              while ($watch.Elapsed.TotalSeconds -lt 90) {
+                  if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                  try {
+                      if ((Invoke-WebRequest -Uri "$base/" -NoProxy -TimeoutSec 5).StatusCode -eq 200) { return $proc }
+                  } catch {
+                      Start-Sleep -Milliseconds 500
+                  }
+              }
+              Stop-Process -Id $proc.Id -Force
+              throw '90 秒内首页没有返回 200'
+          }
+
+          try {
+              python .github/scripts/smoke_data.py seed --rated 240 --unrated 40
+              if ($LASTEXITCODE -ne 0) { throw '生成合成打标数据失败' }
+
+              $proc = Start-Bustag 'train'
+              try {
+                  # 模型页"开始训练"按钮提交的 POST，训练完跳回 /model?training=<编号>
+                  $page = Invoke-WebRequest -Uri "$base/do-training" -Method Post -NoProxy -TimeoutSec 120
+                  $landed = $page.BaseResponse.RequestMessage.RequestUri.PathAndQuery
+                  if ($landed -notmatch '^/model\?training=\d+$') { throw "训练后没有跳回模型页，而是 $landed" }
+                  if ($page.Content -notmatch '训练完成，下面是新模型的数据。已重新打分 (\d+) 部，其中推荐 (\d+) 部') { throw '模型页没有显示"训练完成"和重新打分的部数' }
+                  $scored, $recommended = $Matches[1], $Matches[2]
+                  if ([int]$scored -ne 40) { throw "训练后应该给 40 部未打标的影片打分，页面上写的是 $scored 部" }
+                  if ($page.Content -notmatch '喜欢认对 (\d+)%，不喜欢认对 (\d+)%') { throw '模型页没有显示交叉验证的结果' }
+                  "训练完成：重新打分 $scored 部，推荐 $recommended 部；喜欢认对 $($Matches[1])%，不喜欢认对 $($Matches[2])%"
+              } finally {
+                  if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              }
+
+              python .github/scripts/smoke_data.py seed --unrated 30
+              if ($LASTEXITCODE -ne 0) { throw '补充未打标的影片失败' }
+
+              $proc = Start-Bustag 'recommend'
+              try {
+                  $watch = [Diagnostics.Stopwatch]::StartNew()
+                  while ($true) {
+                      if ($proc.HasExited) { throw "bustag.exe 提前退出，退出码 $($proc.ExitCode)" }
+                      $unrated, $system = (python .github/scripts/smoke_data.py status) -split ' '
+                      if ($LASTEXITCODE -ne 0) { throw '读取数据库失败' }
+                      if ([int]$unrated -eq 0) { break }
+                      if ($watch.Elapsed.TotalSeconds -gt 150) { throw "150 秒内没有推荐完，还有 $unrated 部影片没有评分" }
+                      Start-Sleep -Seconds 2
+                  }
+                  '首次定时任务推荐完成：重启后 {0:N0} 秒，系统推荐 {1} 部' -f $watch.Elapsed.TotalSeconds, $system
+              } finally {
+                  if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+              }
+              if ((Get-Content -Path $logs -Raw -Encoding ansi) -match 'Traceback') { throw 'bustag.exe 的日志里有异常栈' }
+          } finally {
+              '--- bustag.exe 输出 ---'
+              foreach ($log in $logs) {
+                  "# $(Split-Path -Leaf $log)"
+                  Get-Content -Path $log -Encoding ansi -ErrorAction SilentlyContinue
+              }
+          }
+
+      - name: 打包 zip
+        id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          # MIT 许可要求每份副本都附带版权和许可声明，放在 exe 旁边
+          Copy-Item LICENSE dist\bustag\LICENSE
+          $zip = "bustag-$($env:VERSION)-windows-x64.zip"
+          Compress-Archive -Path 'dist\bustag' -DestinationPath $zip
+          # 不同版本的 Compress-Archive 写出的路径分隔符不同，比较前统一成 /
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip).Path)
+          try {
+              $entries = $archive.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          } finally {
+              $archive.Dispose()
+          }
+          if ($entries -notcontains 'bustag/LICENSE') { throw "$zip 里没有 bustag/LICENSE" }
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          '{0}  {1:N1} MB' -f $zip, ((Get-Item $zip).Length / 1MB)
+
+      # archive: false 直接上传这个 zip，在 Actions 页面下载时不会再被套一层 zip；产物名就是文件名。
+      # 用 download-artifact 取回时要加 skip-decompress，否则它会把这个 zip 当成归档自动解开
+      - name: 上传产物
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.package.outputs.zip }}
+          archive: false
+          if-no-files-found: error
+
+  # 每次运行（推送分支、推送标签、PR、手动）都按发布时完全相同的方式取回并检查要发布的 zip，只读；
+  # 这样打标签之前，发布路径已经在普通推送上验证过
+  release-check:
+    name: 检查发布用的 zip
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # 产物本身就是 zip：download-artifact 默认会把 zip 解开（只剩 bustag/ 目录），
+      # skip-decompress 让它原样保存构建 job 里检查过的那个文件。发布作业里的这一步必须和这里一样
+      - name: 取回产物
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.zip }}
+          path: release-assets
+          skip-decompress: true
+
+      - name: 检查要发布的文件
+        shell: pwsh
+        env:
+          ZIP: ${{ needs.build.outputs.zip }}
+        run: ./.github/scripts/check_release_zip.ps1 -Directory release-assets -ExpectedName $env:ZIP
+
+  # 只有 v* 标签才发布；写权限只给这个作业。附到 Release 的就是检查脚本确认过的那一个 zip
+  release:
+    name: 发布到 GitHub Release
+    needs: [build, release-check]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 取回产物
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.zip }}
+          path: release-assets
+          skip-decompress: true
+
+      - name: 检查要发布的文件
+        id: check
+        shell: pwsh
+        env:
+          ZIP: ${{ needs.build.outputs.zip }}
+        run: ./.github/scripts/check_release_zip.ps1 -Directory release-assets -ExpectedName $env:ZIP
+
+      - name: 创建 Release 并附上 zip
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ steps.check.outputs.path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

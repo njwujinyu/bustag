@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [master, revive]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "测试（${{ matrix.os }}，Python ${{ matrix.python-version }}）"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: windows-latest
+            python-version: '3.12'
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: 运行测试（离线，真网站测试默认跳过）
+        run: python -m pytest
+
+      # gunicorn 只在 Linux 上有：create_app() 是 gunicorn 的入口，只能开 1 个 worker（定时任务在进程内）；
+      # --threads 8 时用 gthread worker，下载封面时别的请求照常处理，超时只看 worker 心跳。
+      # 前面的测试失败时也照样运行（作业结论仍然是失败），不丢掉 gunicorn 这条路的结果
+      - name: gunicorn 冒烟
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        env:
+          BUSTAG_DATA_DIR: ${{ runner.temp }}/gunicorn-data
+        run: |
+          set -euo pipefail
+          python -m pip install gunicorn
+          mkdir -p "$BUSTAG_DATA_DIR"
+          # 抓取指向本机关闭的端口：冒烟只查本地页面，不访问 JavBus
+          printf '[download]\nroot_path = http://127.0.0.1:9\n' > "$BUSTAG_DATA_DIR/config.ini"
+
+          log="$RUNNER_TEMP/gunicorn.log"
+          gunicorn -w 1 --threads 8 "bustag.app.index:create_app()" --bind 127.0.0.1:8765 > "$log" 2>&1 &
+          pid=$!
+          cleanup() {
+            kill "$pid" 2> /dev/null || true
+            wait "$pid" 2> /dev/null || true
+            echo '--- gunicorn 日志 ---'
+            cat "$log"
+          }
+          trap cleanup EXIT
+
+          url=http://127.0.0.1:8765
+          code=000
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+            if [ "$code" = 200 ]; then
+              break
+            fi
+            if ! kill -0 "$pid" 2> /dev/null; then
+              echo 'gunicorn 提前退出了'
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$code" != 200 ]; then
+            echo "首页 60 秒内没有返回 200（最后一次状态码 $code）"
+            exit 1
+          fi
+          echo '/ -> 200'
+          for path in /model /static/css/bustag.css; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url$path" || true)
+            echo "$path -> $code"
+            if [ "$code" != 200 ]; then
+              exit 1
+            fi
+          done
+          if ! grep -q 'Using worker: gthread' "$log"; then
+            echo 'gunicorn 没有用 gthread worker'
+            exit 1
+          fi
+          echo 'worker：gthread'
+          # 从 create_app() 进来的也给数据目录上锁、把日志写进数据目录
+          [ -f "$BUSTAG_DATA_DIR/bustag.lock" ]
+          [ -s "$BUSTAG_DATA_DIR/logs/bustag.log" ]
+          echo '数据目录已上锁，日志文件有内容'
+          # 重新加载（HUP）：gunicorn 先起新的 worker、再让旧的退出；新的等旧的放开数据目录以后才起得来，
+          # 等不到的话 gunicorn 会整个退出。15 秒比新的 worker 最多等的时间长
+          kill -HUP "$pid"
+          sleep 15
+          if ! kill -0 "$pid" 2> /dev/null; then
+            echo '重新加载后 gunicorn 退出了'
+            exit 1
+          fi
+          booted=$(grep -c 'Booting worker with pid' "$log" || true)
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+          echo "重新加载后：启动过 $booted 个 worker，/ -> $code"
+          [ "$booted" -ge 2 ]
+          [ "$code" = 200 ]
